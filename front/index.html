@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="基于本地能源文档库的检索问答界面" />
+    <title>能源文档问答</title>
+    <link rel="stylesheet" href="/static/style.css?v=1" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <aside class="sidebar">
+        <div class="sidebar__brand">
+          <span class="brand__logo" aria-hidden="true"></span>
+          <span class="brand__name">能源文档问答</span>
+        </div>
+
+        <button class="new-chat" id="new-chat" type="button">
+          <span class="icon" data-icon="plus"></span>新建对话
+        </button>
+
+        <nav class="history" id="history" aria-label="历史对话"></nav>
+
+        <div class="sidebar__footer">
+          <section class="index-card" aria-label="索引状态">
+            <div class="index-card__head">
+              <span class="index-card__dot" id="index-dot"></span>
+              <span>文档索引</span>
+              <span class="badge badge--demo" id="demo-badge" hidden>演示数据</span>
+            </div>
+            <div class="index-card__meta" id="index-meta">正在读取索引状态…</div>
+            <button class="index-card__button" id="build-button" type="button">
+              <span class="icon" data-icon="refresh"></span>增量构建索引
+            </button>
+          </section>
+          <div class="user-row">
+            <span class="user-avatar" aria-hidden="true"></span>
+            <span id="user-label">本地知识库</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <button class="icon-btn sidebar-toggle" id="sidebar-toggle" type="button" aria-label="打开侧边栏">
+            <span class="icon" data-icon="menu"></span>
+          </button>
+          <div class="model-pill">
+            <span class="model-pill__dot" aria-hidden="true"></span>
+            <span id="model-name">正在读取模型信息…</span>
+          </div>
+          <div class="topbar__spacer"></div>
+          <div class="settings">
+            <button class="settings__toggle" id="settings-toggle" type="button" aria-expanded="false">
+              <span class="icon" data-icon="prompt"></span>检索设置
+              <span class="icon" data-icon="chevron"></span>
+            </button>
+            <div class="settings__panel" id="settings-panel" hidden>
+              <p class="settings__title">检索策略</p>
+              <label class="switch">
+                <input type="checkbox" id="switch-hybrid" checked />
+                <span class="switch__track"></span>
+                <span class="switch__text">
+                  <span class="switch__name">混合检索</span>
+                  <span class="switch__note">向量召回与 BM25 关键词召回各取前 20 条，再用 RRF 合并</span>
+                </span>
+              </label>
+              <label class="switch">
+                <input type="checkbox" id="switch-rerank" checked />
+                <span class="switch__track"></span>
+                <span class="switch__text">
+                  <span class="switch__name">重排序</span>
+                  <span class="switch__note">
+                    用重排模型精排并只保留前 5 条进入提示词；关闭后 20 条全部进入，提示词更长、生成更慢
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+          <div class="settings">
+            <button class="settings__toggle" id="memory-toggle" type="button" aria-expanded="false" hidden>
+              <span class="icon" data-icon="doc"></span>长期记忆
+            </button>
+            <div class="settings__panel settings__panel--wide" id="memory-panel" hidden>
+              <p class="settings__title">长期记忆</p>
+              <p class="settings__note">
+                内容来自服务端的 memory.md，每轮提问都会注入提示词，按上限从文件开头截取。
+                可以在这里编辑，也可以直接改服务器上的文件。
+              </p>
+              <textarea
+                class="memory-input"
+                id="memory-text"
+                rows="10"
+                spellcheck="false"
+                placeholder="例如：&#10;## 用户偏好&#10;- 关注新型储能与电力市场"
+              ></textarea>
+              <div class="memory-actions">
+                <span class="memory-counter" id="memory-counter"></span>
+                <button class="memory-save" id="memory-save" type="button">保存</button>
+              </div>
+              <p class="memory-status" id="memory-status"></p>
+            </div>
+          </div>
+          <button class="icon-btn" id="theme-toggle" type="button" aria-label="切换深浅主题">
+            <span class="icon" data-icon="moon"></span>
+          </button>
+        </header>
+
+        <div class="chat" id="chat">
+          <div class="chat__inner">
+            <section class="welcome" id="welcome">
+              <h1 class="welcome__title">你好，我是能源文档问答助手</h1>
+              <p class="welcome__subtitle">
+                基于本地能源与政务文档库检索作答，每条回答都会标注参考来源
+              </p>
+              <div class="suggestions" id="suggestions"></div>
+            </section>
+            <div class="messages" id="messages" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <div class="composer-area">
+          <form class="composer" id="composer">
+            <textarea
+              class="composer__input"
+              id="input"
+              rows="1"
+              placeholder="给能源文档问答助手发送消息…"
+            ></textarea>
+            <div class="composer__bar">
+              <div class="composer__toggles">
+                <button type="button" class="toggle is-on" id="toggle-hybrid">
+                  <span class="toggle__mark"></span>混合检索
+                </button>
+                <button type="button" class="toggle is-on" id="toggle-rerank">
+                  <span class="toggle__mark"></span>重排序
+                </button>
+              </div>
+              <button type="submit" class="send" id="send" aria-label="发送">
+                <span class="icon" data-icon="send"></span>
+              </button>
+              <button type="button" class="stop" id="stop" hidden aria-label="停止接收">
+                <span class="icon" data-icon="stop"></span>
+              </button>
+            </div>
+          </form>
+          <p class="disclaimer">
+            回答由本地文档检索生成，请以原文为准；Enter 发送，Shift + Enter 换行<br />
+            追问会带上最近几轮对话，但检索仍只用当前问题本身
+          </p>
+        </div>
+      </main>
+    </div>
+
+    <button class="backdrop" id="backdrop" type="button" aria-label="关闭侧边栏"></button>
+    <script type="module" src="/static/app.js?v=1"></script>
+  </body>
+</html>

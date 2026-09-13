@@ -1,0 +1,30 @@
+# 运行数据不属于源码：索引、片段缓存、模型权重和原始文档都由使用方自己准备。
+
+# 索引与缓存，由 python main.py build 生成
+data/chunks.pkl
+data/build_manifest.json
+data/build_manifest.pending
+data/milvus.db/
+
+# 记忆：memory.md 是长期记忆，sessions/ 下是完整的对话记录，
+# 这是本项目产出的最敏感的内容，不要提交。
+data/memory/
+
+# 原始文档和模型权重体积大且各环境不同，按需自行管理
+data/gov_doc/
+models/
+
+# 分块对比评测的中间产物：每个策略一份临时向量库和全量分块导出，重跑评测即可重建。
+# 同目录下的 metrics.json、stats.json、summary.json、report.md 是评测结论，需要提交。
+tests/results/chunk_compare/*/milvus.db/
+tests/results/chunk_compare/*/chunks.json
+tests/results/chunk_compare/*/chunks.pkl
+
+# Python 运行缓存与构建产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/

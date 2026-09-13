@@ -1,0 +1,2 @@
+# 依赖统一维护在 pyproject.toml；此文件保留常用的安装方式。
+.[runtime,evaluation,dev]
