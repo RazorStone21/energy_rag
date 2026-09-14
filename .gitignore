@@ -15,10 +15,11 @@ data/gov_doc/
 models/
 
 # 分块对比评测的中间产物：每个策略一份临时向量库和全量分块导出，重跑评测即可重建。
-# 同目录下的 metrics.json、stats.json、summary.json、report.md 是评测结论，需要提交。
-tests/results/chunk_compare/*/milvus.db/
-tests/results/chunk_compare/*/chunks.json
-tests/results/chunk_compare/*/chunks.pkl
+# chunk_compare（切分策略）与 overlap_compare（重叠长度）结构同构，共用同一套规则。
+# 同目录下的 manifest.json、metrics.json、stats.json、summary.json、report.md 是评测结论，需要提交。
+tests/results/*compare/*/milvus.db/
+tests/results/*compare/*/chunks.json
+tests/results/*compare/*/chunks.pkl
 
 # Python 运行缓存与构建产物
 __pycache__/
