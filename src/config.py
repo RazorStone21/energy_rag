@@ -201,7 +201,9 @@ def _resolve_data_root(
     # config_path： config.toml 的位置，
     # configured_root：配置文件里填写的数据根目录
     # override：外部指定的、用来覆盖配置的数据根目录
-    config_path: Path, configured_root: str, override: str | Path | None
+    config_path: Path,
+    configured_root: str,
+    override: str | Path | None,
 ) -> Path:
     """将数据根目录转换为绝对路径。
 

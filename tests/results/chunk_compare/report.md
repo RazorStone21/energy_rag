@@ -1,5 +1,15 @@
 # 三种分块方式的检索指标对比
 
+> ⚠️ **本报告的数值与结论已失效，等待重跑。**
+>
+> 判分函数 `is_relevant` 的子串判断漏了空白归一化（同一函数里的 `_ngrams` 却做了），
+> 导致长片段系统性判不中。修正该 bug 后，`recursive_char` 的 hit@1 由 0/16 变为 6/16，
+> 三种策略的差距也大幅收窄——**下面「结论」一节中关于 `recursive_char` 近乎失效、
+> 建议单独排查的说法是错的**，它不是策略的问题。
+>
+> 修正已落在 `tests/evaluation/run_retrieval_eval.py`。本文件与 `metrics.json`、
+> `stats.json`、`summary.json` 都需要在重跑 `run_chunk_compare` 之后按新数值重写。
+
 同一批 44 份 PDF，用三种分块方式各建一个独立的 Milvus 库，跑同一套标注问题，
 检索链路与生产一致（bge-m3 向量 + jieba BM25，RRF 融合，可叠加 bge-reranker-v2-m3 重排），
 差异只来自分块方式。

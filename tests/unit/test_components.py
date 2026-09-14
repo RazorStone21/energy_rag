@@ -911,7 +911,9 @@ def test_boundary_fix_moves_trailing_heading_to_next_chunk():
     """被切在块尾的章节标题要挪到下一块开头：标题属于它下面的内容。"""
     from src.chunker import restore_heading_boundaries
 
-    first = doc("（二）加快新型电网建设。推动清洁能源基地外送通道建设。\n（三）推进构网型技术应用。")
+    first = doc(
+        "（二）加快新型电网建设。推动清洁能源基地外送通道建设。\n（三）推进构网型技术应用。"
+    )
     second = doc("根据高比例新能源电力系统运行需要，选择典型场景应用构网型控制技术。")
     fixed = restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)
     assert fixed[0].page_content.endswith("推动清洁能源基地外送通道建设。")

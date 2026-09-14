@@ -42,6 +42,8 @@ def normalize_caption(text: str) -> str:
 def is_caption(text: str) -> bool:
     """判断一行是否为「图N」「表N」「专栏N」这类题注。"""
     return bool(_CAPTION_START.match(normalize_caption(text)))
+
+
 # 同一视觉行的判定容差：纵坐标相差小于该值即视为同一行，用于拼接被拆开的题注。
 _SAME_LINE_TOLERANCE = 3.0
 
@@ -205,7 +207,12 @@ def _overlaps(bbox, others, tolerance: float = 8.0) -> bool:
     """
     ax0, ay0, ax1, ay1 = bbox
     for bx0, by0, bx1, by1 in others:
-        if ax0 < bx1 - tolerance and bx0 < ax1 - tolerance and ay0 < by1 - tolerance and by0 < ay1 - tolerance:
+        if (
+            ax0 < bx1 - tolerance
+            and bx0 < ax1 - tolerance
+            and ay0 < by1 - tolerance
+            and by0 < ay1 - tolerance
+        ):
             return True
     return False
 

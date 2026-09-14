@@ -286,7 +286,12 @@ def test_heading_path_detects_chinese_section_numbering():
     """
     from src.headings import heading_level
 
-    for text in ("三、绿证市场活力持续增强", "（一）交易规模实现翻两番", "第一章 总体要求", "2. 装机规模超预期增长"):
+    for text in (
+        "三、绿证市场活力持续增强",
+        "（一）交易规模实现翻两番",
+        "第一章 总体要求",
+        "2. 装机规模超预期增长",
+    ):
         assert heading_level(text) is not None, text
     for text in (
         "0.4% A。",
@@ -378,9 +383,7 @@ def test_collect_descriptions_splits_into_batches_and_keeps_order():
     assert vision.singles == []
     # 图片必须和提示词一一对应地传下去，错位会让描述张冠李戴。
     for images, prompts in vision.batches:
-        assert [p.removeprefix("提示") for p in prompts] == [
-            i.removeprefix("图") for i in images
-        ]
+        assert [p.removeprefix("提示") for p in prompts] == [i.removeprefix("图") for i in images]
 
 
 def test_collect_descriptions_falls_back_to_one_by_one(caplog):

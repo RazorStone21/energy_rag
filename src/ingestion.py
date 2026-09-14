@@ -179,8 +179,7 @@ class IngestionPipeline:
         target_paths = [
             path
             for path in selected_paths
-            if force_reprocess
-            or manifest.get(path.name) != file_hashes[path.name]
+            if force_reprocess or manifest.get(path.name) != file_hashes[path.name]
         ]
         # 全量会用 replace_all 整体覆盖索引，一个可解析文档都没有时报错，避免把索引清空。
         if not incremental and not target_paths:

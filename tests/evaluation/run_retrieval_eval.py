@@ -37,14 +37,19 @@ COMPARE_NOTE = (
     "同一套题目各跑一遍做对比，用于量化重排序（rerank）带来的召回与排序收益。"
 )
 RELEVANCE_NOTE = (
-    "「正确片段」的判定：检索到的 chunk 与标注的 relevant_chunks 存在子串包含关系，"
-    "或 3-gram Jaccard 相似度 ≥ 0.6，即视为命中。上述所有指标取值都在 0~1 之间，越大越好。"
+    "「正确片段」的判定：检索到的 chunk 与标注的 relevant_chunks 在忽略空格和换行后存在"
+    "子串包含关系，或 3-gram Jaccard 相似度 ≥ 0.6，即视为命中。上述所有指标取值都在 0~1 之间，越大越好。"
 )
 
 
+def _strip_layout(s: str) -> str:
+    """去掉空格和换行；PDF 抽取出的换行位置随排版变化，不携带语义。"""
+    return s.replace("\n", "").replace(" ", "")
+
+
 def _ngrams(s: str, n: int = 3) -> set:
-    """去掉空格和换行，按每次移动一个字符提取连续 n 个字符，返回去重后的集合。"""
-    s = s.replace("\n", "").replace(" ", "")
+    """按每次移动一个字符提取连续 n 个字符，返回去重后的集合。"""
+    s = _strip_layout(s)
     return {s[i : i + n] for i in range(len(s) - n + 1)}
 
 
@@ -57,9 +62,16 @@ def _jaccard(a: str, b: str, n: int = 3) -> float:
 
 
 def is_relevant(retrieved_text: str, relevant_texts: list[str], threshold: float = 0.6) -> bool:
-    """用文字包含关系或字符片段相似度判断是否命中标注，并不判断语义是否一致。"""
+    """用文字包含关系或字符片段相似度判断是否命中标注，并不判断语义是否一致。
+
+    包含关系也在去掉空格和换行后比较：同一句话在标注里和在 PDF 片段里的断行
+    位置往往不同，逐字比较会把明明命中的结果判成未命中。Jaccard 一直按这套
+    归一化计算，两处口径必须一致。
+    """
+    text = _strip_layout(retrieved_text)
     for rt in relevant_texts:
-        if retrieved_text in rt or rt in retrieved_text:
+        stripped = _strip_layout(rt)
+        if text in stripped or stripped in text:
             return True
         if _jaccard(retrieved_text, rt) >= threshold:
             return True

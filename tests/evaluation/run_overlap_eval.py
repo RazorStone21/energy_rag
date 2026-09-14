@@ -150,7 +150,9 @@ def run(questions, runtime, with_rerank, duplication_k):
         relevant = question.get("relevant_chunks") or []
         if not relevant:
             continue
-        hits = runtime.pipeline.retrieve(question["question"], with_rerank=with_rerank, hybrid=False)
+        hits = runtime.pipeline.retrieve(
+            question["question"], with_rerank=with_rerank, hybrid=False
+        )
         documents = [hit.document for hit in hits]
         metrics = metrics_for_query(documents, relevant)
         metrics["question"] = question["question"]
@@ -158,7 +160,10 @@ def run(questions, runtime, with_rerank, duplication_k):
         duplicated.append(top_k_duplication(documents, duplication_k))
     if not per_query:
         return {"avg": {}, "per_query": [], "n": 0}
-    numeric = [{key: value for key, value in m.items() if isinstance(value, (int, float))} for m in per_query]
+    numeric = [
+        {key: value for key, value in m.items() if isinstance(value, (int, float))}
+        for m in per_query
+    ]
     return {
         "avg": _average(numeric),
         "per_query": per_query,
@@ -248,7 +253,9 @@ def main():
         )
         for mode, label in (("vector_only", "纯向量"), ("vector_rerank", "向量+重排")):
             _print_result(f"{label} · {key}", result[mode])
-            print(f"  平均 top-{args.duplication_k} 重复度 : {result[mode]['平均 top-k 重复度']:.4f}")
+            print(
+                f"  平均 top-{args.duplication_k} 重复度 : {result[mode]['平均 top-k 重复度']:.4f}"
+            )
         print()
 
     suffix = f"（取前 {args.duplication_k} 条统计）"
@@ -264,7 +271,9 @@ def main():
     print("=" * 72)
     print("受控对比（唯一变量：正文片段是否重叠）")
     print("=" * 72)
-    print(f"{'重叠比例':<12}{'片段数':>7}{'平均字数':>9}  {'模式':<10}{'MRR':>8}{'Recall@5':>10}{'重复度':>9}")
+    print(
+        f"{'重叠比例':<12}{'片段数':>7}{'平均字数':>9}  {'模式':<10}{'MRR':>8}{'Recall@5':>10}{'重复度':>9}"
+    )
     for ratio in args.ratios:
         stats = stats_by_ratio[ratio]
         for mode, label in (("vector_only", "纯向量"), ("vector_rerank", "向量+重排")):
