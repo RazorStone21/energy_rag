@@ -15,8 +15,9 @@ data/chunks_latest.*
 data/memory/
 
 # 原始文档和模型权重体积大且各环境不同，按需自行管理
+# models/ 必须带前导斜杠：不带时该模式会匹配任意层级的同名目录，把 src/models/ 源码一并忽略。
 data/gov_doc/
-models/
+/models/
 
 # 分块对比评测的中间产物：每个策略一份临时向量库和全量分块导出，重跑评测即可重建。
 # chunk_compare（切分策略）与 overlap_compare（重叠长度）结构同构，共用同一套规则。
