@@ -6,6 +6,10 @@ data/build_manifest.json
 data/build_manifest.pending
 data/milvus.db/
 
+# chunks.pkl 的可读导出，由 python -m scripts.export_chunks 生成；
+# 体积随语料增长且随时可重建，只作人工查看用，不进版本库。
+data/chunks_latest.*
+
 # 记忆：memory.md 是长期记忆，sessions/ 下是完整的对话记录，
 # 这是本项目产出的最敏感的内容，不要提交。
 data/memory/
