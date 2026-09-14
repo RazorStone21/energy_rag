@@ -241,6 +241,43 @@ def test_clean_element_text_drops_pure_placeholder_blocks():
     assert "全球储能装机" in kept and "(cid:" not in kept
 
 
+def test_page_number_pattern_leaves_bare_numbers_alone():
+    """只认两侧带装饰符的页码；光秃秃的数字行是年份或编号，误删代价更大。"""
+    from src.parsers.pdf import _PAGE_NUMBER_FOOTER
+
+    assert _PAGE_NUMBER_FOOTER.match("— 12 —")
+    assert _PAGE_NUMBER_FOOTER.match("- 3 -")
+    assert not _PAGE_NUMBER_FOOTER.match("2024")
+    assert not _PAGE_NUMBER_FOOTER.match("3.")
+    assert not _PAGE_NUMBER_FOOTER.match("— 推动储能建设")
+
+
+def test_page_number_footer_is_dropped_before_chunking(monkeypatch):
+    """页码页脚要在提取阶段丢掉：跨页合并后会卡进句子中间，污染检索文本。"""
+    updf = pytest.importorskip("unstructured.partition.pdf")
+    from src.parsers.pdf import extract_page_texts_with_unstructured
+
+    def element(category, text, page):
+        return SimpleNamespace(
+            category=category, text=text, metadata=SimpleNamespace(page_number=page)
+        )
+
+    monkeypatch.setattr(
+        updf,
+        "partition_pdf",
+        lambda **kwargs: [
+            element("NarrativeText", "优化加强电网主网架。", 1),
+            element("UncategorizedText", "— 1 —", 1),
+            element("NarrativeText", "开展电力系统设计工作。", 2),
+        ],
+    )
+
+    page_texts = extract_page_texts_with_unstructured(Path("x.pdf"), "fast", None)
+
+    assert page_texts[1][0] == ["优化加强电网主网架。"]
+    assert page_texts[2][0] == ["开展电力系统设计工作。"]
+
+
 def test_heading_path_detects_chinese_section_numbering():
     """中文报告的章节标题有固定编号形式；正文句子即使以编号开头也不该误判。
 

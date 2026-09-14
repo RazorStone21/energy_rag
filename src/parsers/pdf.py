@@ -19,6 +19,12 @@ FAST_CATEGORIES = ("Title", "NarrativeText", "Text", "ListItem", "UncategorizedT
 _CID_TOKEN = re.compile(r"\(cid:\d+\)")
 _MAX_CID_RATIO = 0.5
 
+# 页码页脚（如「— 12 —」）常被归到 UncategorizedText，躲过了 Header/Footer 分类的排除，
+# 又总落在页面末尾，跨页合并后会卡进句子中间。只认两侧带装饰符的独立页码：
+# 光秃秃的数字行可能是年份、章节编号或表格里的取值，误删的代价比留噪声大得多。
+_PAGE_NUMBER_FOOTER = re.compile(r"^[—–\-]{1,3}\s*\d{1,4}\s*[—–\-]{1,3}$")
+
+
 def clean_element_text(text: str) -> str:
     """清掉提取失败留下的 (cid:1234) 占位符；整块基本都是占位符时返回空字符串。
 
@@ -77,6 +83,9 @@ def extract_page_texts_with_unstructured(path, strategy, allowed_categories):
             continue
         text = clean_element_text(element.text)
         if not text:
+            continue
+        # 页码不进正文，也不参与标题判断：它既不是内容也不是章节。
+        if _PAGE_NUMBER_FOOTER.match(text):
             continue
         level = heading_level(text)
         if level is not None:

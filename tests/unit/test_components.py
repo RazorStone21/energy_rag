@@ -931,19 +931,104 @@ def test_boundary_fix_leaves_non_heading_tail_alone():
     assert not fixed[1].page_content.startswith("优化储能建设和调用。")
 
 
-def test_boundary_fix_does_not_cross_pages_or_sources():
-    """跨页或跨来源的内容本来就不连续，把标题接过去会张冠李戴。"""
+def test_boundary_fix_crosses_pages_but_not_sources():
+    """同文档相邻两页在正文里连着，标题要搬过去；跨来源的内容不连续，不能搬。"""
     from src.chunker import restore_heading_boundaries
 
-    first = doc("前面还有一整句话在这里。\n（三）推进构网型技术应用。", page=1)
+    first = doc(
+        "前面还有一整句话在这里，它的长度足够留在本块里。\n（三）推进构网型技术应用。", page=1
+    )
     second = doc("根据高比例新能源运行需要，选择典型场景应用构网型控制技术。", page=2)
-    assert restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)[1].page_content == (
-        second.page_content
-    )
+    assert restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)[
+        1
+    ].page_content.startswith("（三）推进构网型技术应用。")
     other = doc("根据高比例新能源运行需要，选择典型场景应用构网型控制技术。", source="b.pdf")
-    assert restore_heading_boundaries([first, other], r"(?<=[。！？；;.!?])", 20)[1].page_content == (
-        other.page_content
+    assert restore_heading_boundaries([first, other], r"(?<=[。！？；;.!?])", 20)[
+        1
+    ].page_content == (other.page_content)
+
+
+# ---------------- 跨页合并 ----------------
+
+
+def test_merge_pages_rejoins_sentence_cut_by_page_break():
+    """页尾停在句中的话要和下一页开头直接接上，被劈开的一句才能复原。
+
+    复原后的那一句起于第一页，因此归第一页；紧随其后的句子才归第二页。
+    """
+    from src.chunker import _merge_pages
+
+    first = doc("优化加强电网主网架。适应电力发展新形势需要，组织", page=1)
+    second = doc("开展电力系统设计工作，补齐结构短板。储能建设持续推进。", page=2)
+    merged, metas = _merge_pages([first, second], r"(?<=[。！？；;.!?])")
+
+    assert "组织开展电力系统设计工作" in merged
+    assert [meta["page"] for meta in metas] == [1, 1, 2]
+
+
+def test_merge_pages_keeps_paragraph_break_when_page_ends_cleanly():
+    """页尾那句已经说完就用换行保留段落边界，不能把两页糊成一坨。"""
+    from src.chunker import _merge_pages
+
+    merged, _ = _merge_pages(
+        [doc("优化加强电网主网架。", page=1), doc("开展电力系统设计工作。", page=2)],
+        r"(?<=[。！？；;.!?])",
     )
+
+    assert merged == "优化加强电网主网架。\n开展电力系统设计工作。"
+
+
+def test_spanning_chunk_takes_page_and_heading_of_its_first_sentence():
+    """跨页片段按第一句所在页引用，章节路径也跟着一起换。"""
+    settings = load_settings(Path(__file__).resolve().parents[2] / "config.toml").splitting
+    pages = [
+        SimpleNamespace(
+            page_content="第一页的正文句子。第二页才说完的句子开头，",
+            metadata={"source": "a.pdf", "page": 1, "type": "text", "heading_path": "一、总则"},
+        ),
+        SimpleNamespace(
+            page_content="在第二页结束。第二页的另一句。",
+            metadata={"source": "a.pdf", "page": 2, "type": "text", "heading_path": "二、实施"},
+        ),
+    ]
+    # 替身切分器按句分组，模拟 SemanticChunker 的产出：句子之间补了空格。
+    splitter = Mock()
+    splitter.split_documents.return_value = [
+        SimpleNamespace(
+            page_content="第一页的正文句子。 第二页才说完的句子开头，在第二页结束。",
+            metadata={"source": "a.pdf", "page": 1, "type": "text", "heading_path": "一、总则"},
+        ),
+        SimpleNamespace(
+            page_content="第二页的另一句。",
+            metadata={"source": "a.pdf", "page": 1, "type": "text", "heading_path": "一、总则"},
+        ),
+    ]
+    chunker = Chunker(Mock(), settings, splitter_factory=lambda *a, **k: splitter)
+
+    result = chunker.split_texts(pages)
+
+    # 第一块跨页但起于第一页；第二块整块在第二页，章节路径必须跟着换。
+    assert [chunk.metadata["page"] for chunk in result] == [1, 2]
+    assert [chunk.metadata["heading_path"] for chunk in result] == ["一、总则", "二、实施"]
+
+
+def test_split_texts_keeps_unpaginated_sources_on_the_old_path():
+    """没有页码的来源按块组织，仍逐块交给切分器，不做合并。"""
+    settings = load_settings(Path(__file__).resolve().parents[2] / "config.toml").splitting
+    blocks = [
+        SimpleNamespace(page_content="甲。", metadata={"source": "a.md", "type": "text"}),
+        SimpleNamespace(page_content="乙。", metadata={"source": "a.md", "type": "text"}),
+    ]
+    splitter = Mock()
+    splitter.split_documents.return_value = blocks
+    chunker = Chunker(Mock(), settings, splitter_factory=lambda *a, **k: splitter)
+
+    chunker.split_texts(blocks)
+
+    # 没有页码就不合并，仍按原来那样整批交给切分器，由它逐块处理。
+    assert [item.args[0] for item in splitter.split_documents.call_args_list] == [
+        [blocks[0], blocks[1]]
+    ]
 
 
 def test_boundary_fix_keeps_heading_when_chunk_would_become_too_short():
