@@ -902,3 +902,86 @@ def test_empty_model_directory_does_not_enable_vision(tmp_path):
     (path / "config.json").write_text("{}", encoding="utf-8")
     assert vision.available
     loader.assert_not_called()
+
+
+# ---------------- 标题边界修复 ----------------
+
+
+def test_boundary_fix_moves_trailing_heading_to_next_chunk():
+    """被切在块尾的章节标题要挪到下一块开头：标题属于它下面的内容。"""
+    from src.chunker import restore_heading_boundaries
+
+    first = doc("（二）加快新型电网建设。推动清洁能源基地外送通道建设。\n（三）推进构网型技术应用。")
+    second = doc("根据高比例新能源电力系统运行需要，选择典型场景应用构网型控制技术。")
+    fixed = restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)
+    assert fixed[0].page_content.endswith("推动清洁能源基地外送通道建设。")
+    assert fixed[1].page_content.startswith("（三）推进构网型技术应用。")
+    # 挪动不改变来源和页码等元数据。
+    assert fixed[1].metadata == second.metadata
+
+
+def test_boundary_fix_leaves_non_heading_tail_alone():
+    """主题句不是编号标题，规则不认它——实测末尾短句里九成是排版碎片，不能乱搬。"""
+    from src.chunker import restore_heading_boundaries
+
+    first = doc("持续推动煤电机组关停和延寿工作。合理规划建设天然气电站。优化储能建设和调用。")
+    second = doc("合理布局、积极有序开发建设抽水蓄能电站。大力发展新型储能。")
+    fixed = restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)
+    assert fixed[0].page_content.endswith("优化储能建设和调用。")
+    assert not fixed[1].page_content.startswith("优化储能建设和调用。")
+
+
+def test_boundary_fix_does_not_cross_pages_or_sources():
+    """跨页或跨来源的内容本来就不连续，把标题接过去会张冠李戴。"""
+    from src.chunker import restore_heading_boundaries
+
+    first = doc("前面还有一整句话在这里。\n（三）推进构网型技术应用。", page=1)
+    second = doc("根据高比例新能源运行需要，选择典型场景应用构网型控制技术。", page=2)
+    assert restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)[1].page_content == (
+        second.page_content
+    )
+    other = doc("根据高比例新能源运行需要，选择典型场景应用构网型控制技术。", source="b.pdf")
+    assert restore_heading_boundaries([first, other], r"(?<=[。！？；;.!?])", 20)[1].page_content == (
+        other.page_content
+    )
+
+
+def test_boundary_fix_keeps_heading_when_chunk_would_become_too_short():
+    """搬走标题后剩下的部分会被长度门槛过滤掉时宁可不搬，否则等于把内容搬丢。"""
+    from src.chunker import restore_heading_boundaries
+
+    first = doc("很短。\n（三）推进构网型技术应用。")
+    second = doc("根据高比例新能源电力系统运行需要，选择典型场景应用构网型控制技术。")
+    fixed = restore_heading_boundaries([first, second], r"(?<=[。！？；;.!?])", 20)
+    assert fixed[0].page_content == first.page_content
+    assert fixed[1].page_content == second.page_content
+
+
+def test_boundary_fix_handles_single_chunk():
+    """只有一个片段时没有下一块可接，原样返回。"""
+    from src.chunker import restore_heading_boundaries
+
+    only = doc("（三）推进构网型技术应用。")
+    assert restore_heading_boundaries([only], r"(?<=[。！？；;.!?])", 20)[0].page_content == (
+        only.page_content
+    )
+    assert restore_heading_boundaries([], r"(?<=[。！？；;.!?])", 20) == []
+
+
+def test_chunker_keeps_list_blocks_whole():
+    """列表块不交给句子切分器：切开会把并列的条目分到不同片段里。"""
+    settings = load_settings(Path(__file__).resolve().parents[2] / "config.toml").splitting
+    listed = SimpleNamespace(
+        page_content="- 甲；\n- 乙；\n- 丙。",
+        metadata={"source": "a.md", "type": "text", "block_kind": "list"},
+    )
+    prose = doc("energy policy text covering the whole paragraph")
+    splitter = Mock()
+    splitter.split_documents.return_value = [prose]
+    chunker = Chunker(Mock(), settings, splitter_factory=lambda *a, **k: splitter)
+
+    result = chunker.split(ParseResult(texts=[listed, prose]))
+
+    assert listed in result
+    # 列表没有进入切分器，只对正文调用了一次。
+    splitter.split_documents.assert_called_once_with([prose])

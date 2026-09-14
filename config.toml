@@ -42,7 +42,7 @@ dpi = 150
 [splitting]
 # percentile 按相邻句组的语义差异分布选断点；70 是百分位，不是每块 70 个字。
 threshold_type = "percentile"
-threshold_amount = 70
+threshold_amount = 82
 buffer_size = 1
 sentence_regex = '(?<=[。！？；;.!?])'
 # 有效字符（中文、字母、数字）少于此数的片段不入库：实测不足 20 字的片段

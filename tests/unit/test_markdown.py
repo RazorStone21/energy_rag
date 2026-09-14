@@ -181,3 +181,48 @@ def test_markdown_location_survives_json_csv_and_preview_export(tmp_path):
     preview = to_markdown(records)
     assert "标题: 能源报告" in preview and "所属原文块: 第1—2行" in preview
     assert "第3页" in preview
+
+
+def test_top_level_list_stays_whole_with_its_intro(tmp_path):
+    """顶层列表整体成块，前面的引出语一起带走。
+
+    列表项是一组并列条目，按句子切分会把其中几条和其余条拆开；
+    而引出语（「……遵循以下原则：」）单独成块又太短，会被长度门槛当残片过滤掉，
+    整句凭空消失。两者都要求引出语跟着列表走。
+    """
+    content = (
+        "## 总则\n\n**第三条** 数据分类分级遵循以下原则：\n\n"
+        "- **依据明确。** 以数据的特性和用途作为分类的主要依据。\n"
+        "- **边界清晰。** 所有数据均有确定的类别、等级。\n"
+        "- **就高从严。** 涉及多个方面的安全风险时按最高级别确定。\n\n"
+        "## 附则\n\n末尾正文。\n"
+    )
+    parsed = parse_markdown(tmp_path, content)
+    lists = [d for d in parsed.texts if d.metadata["block_kind"] == "list"]
+    assert len(lists) == 1
+    block = lists[0]
+    assert block.page_content.startswith("**第三条** 数据分类分级遵循以下原则：")
+    for item in ("依据明确", "边界清晰", "就高从严"):
+        assert item in block.page_content
+    assert block.metadata["heading_path"] == "总则"
+
+
+def test_list_intro_never_swallows_a_heading(tmp_path):
+    """列表紧跟标题时不能把标题并进列表，否则标题会从章节结构里消失。"""
+    content = "## 识别规则\n\n- 第一条规则；\n- 第二条规则。\n"
+    parsed = parse_markdown(tmp_path, content)
+    lists = [d for d in parsed.texts if d.metadata["block_kind"] == "list"]
+    assert len(lists) == 1
+    assert not lists[0].page_content.startswith("#")
+    assert "第一条规则" in lists[0].page_content
+    assert lists[0].metadata["heading_path"] == "识别规则"
+
+
+def test_ordered_list_is_also_a_whole_block(tmp_path):
+    """有序列表与无序列表同样处理。"""
+    content = "## 流程\n\n按以下顺序执行：\n\n1. 先核对数据来源；\n2. 再判定数据等级。\n"
+    parsed = parse_markdown(tmp_path, content)
+    lists = [d for d in parsed.texts if d.metadata["block_kind"] == "list"]
+    assert len(lists) == 1
+    assert lists[0].page_content.startswith("按以下顺序执行：")
+    assert "1. 先核对数据来源；" in lists[0].page_content

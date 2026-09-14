@@ -1,7 +1,9 @@
-"""按标题组织 Markdown 正文，单独保留顶层表格和代码块，记录原文位置。
+"""按标题组织 Markdown 正文，单独保留顶层表格、列表和代码块，记录原文位置。
 
 使用语法解析器识别块边界，再读取对应原文，避免改写列表、链接和代码缩进。
-列表或引用内部的表格与代码保留在所属正文中；图片链接不触发图片读取。
+顶层列表单独成块：列表项是并列的一组条目，按句子切分会把其中几条和其余条拆开，
+检索到的片段只覆盖一部分条目。列表或引用内部的表格与代码保留在所属正文中；
+图片链接不触发图片读取。
 """
 
 from __future__ import annotations
@@ -11,6 +13,48 @@ from pathlib import Path
 
 from ..schemas import ParseResult
 from .text import read_utf8_text
+
+# 会被单独切成一个块的顶层元素。列表也在这里：列表项是一组并列条目，
+# 交给按句子切分的分块器会把其中几条和其余条拆开。
+BLOCK_TOKENS = (
+    "heading_open",
+    "table_open",
+    "fence",
+    "code_block",
+    "bullet_list_open",
+    "ordered_list_open",
+)
+BLOCK_KINDS = {
+    "table_open": "table",
+    "fence": "code",
+    "code_block": "code",
+    "bullet_list_open": "list",
+    "ordered_list_open": "list",
+}
+LIST_TOKENS = ("bullet_list_open", "ordered_list_open")
+
+
+def _list_intro_start(lines, block_start, limit):
+    """返回列表块应当从哪一行开始，把紧邻的引出语并进来。
+
+    列表前面通常有一句引出语（「……遵循以下原则：」）。它属于这个列表，
+    但单独成块往往太短，会被切分器的长度门槛当成残片过滤掉，
+    整句引出语就此消失。这里只吃掉紧邻的那一段，遇到空行或标题就停。
+    """
+    index = block_start
+    # 先跳过列表与引出语之间的空行。
+    while index > limit and not lines[index - 1].strip():
+        index -= 1
+    end = index
+    # 再往前吃掉紧邻的那一段非空行。
+    while index > limit and lines[index - 1].strip():
+        index -= 1
+    if index == end:
+        return block_start
+    # 不要把标题并进来：标题自带一个块，并进列表会让它从章节结构里消失。
+    if lines[index].lstrip().startswith("#"):
+        return block_start
+    return index
 
 
 class MarkdownParser:
@@ -56,7 +100,7 @@ class MarkdownParser:
         )
 
     def _parse_content(self, content: str, path: Path) -> ParseResult:
-        """根据顶层标题、表格和代码块划分原文，每个块只放入结果一次。"""
+        """根据顶层标题、表格、列表和代码块划分原文，每个块只放入结果一次。"""
         tokens = self._load_parser().parse(content)
         lines = StringIO(content).readlines()
         result = ParseResult()
@@ -65,9 +109,12 @@ class MarkdownParser:
         for index, token in enumerate(tokens):
             if token.level != 0 or token.map is None:
                 continue
-            if token.type not in ("heading_open", "table_open", "fence", "code_block"):
+            if token.type not in BLOCK_TOKENS:
                 continue
             block_start, block_end = token.map
+            if token.type in LIST_TOKENS:
+                # 列表前紧邻的引出语属于这个列表，见 _list_intro_start。
+                block_start = _list_intro_start(lines, block_start, start)
             document = self._make_document(lines, start, block_start, path, headings, "section")
             if document is not None:
                 result.texts.append(document)
@@ -82,7 +129,7 @@ class MarkdownParser:
                 start = block_start
                 continue
 
-            block_kind = "table" if token.type == "table_open" else "code"
+            block_kind = BLOCK_KINDS[token.type]
             document = self._make_document(
                 lines, block_start, block_end, path, headings, block_kind
             )
@@ -90,6 +137,7 @@ class MarkdownParser:
                 if block_kind == "table":
                     result.tables.append(document)
                 else:
+                    # 列表和代码块都作为完整单元放进正文，由切分器整体保留。
                     result.texts.append(document)
             start = block_end
 

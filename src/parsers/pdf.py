@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
+from ..headings import heading_level
 from ..schemas import ParseResult
 from . import pdf_elements
 
@@ -17,17 +18,6 @@ FAST_CATEGORIES = ("Title", "NarrativeText", "Text", "ListItem", "UncategorizedT
 # 字体缺少字符映射时，unstructured 会把每个字输出成 (cid:1234) 这样的占位符。
 _CID_TOKEN = re.compile(r"\(cid:\d+\)")
 _MAX_CID_RATIO = 0.5
-
-# 中文报告的章节标题有固定的编号形式，正文极少这样开头；配合长度上限即可区分。
-_HEADING_PATTERNS = (
-    (1, re.compile(r"^第[一二三四五六七八九十百]+[章节篇]")),
-    (1, re.compile(r"^[一二三四五六七八九十]+、")),
-    (2, re.compile(r"^（[一二三四五六七八九十]+）")),
-    (3, re.compile(r"^\d+(?:\.\d+)*[、．]\s*\S")),
-    (3, re.compile(r"^\d+(?:\.\d+)*\.\s+\S")),
-)
-_MAX_HEADING_CHARS = 40
-
 
 def clean_element_text(text: str) -> str:
     """清掉提取失败留下的 (cid:1234) 占位符；整块基本都是占位符时返回空字符串。
@@ -42,19 +32,6 @@ def clean_element_text(text: str) -> str:
     if placeholder_chars / len(text) > _MAX_CID_RATIO:
         return ""
     return _CID_TOKEN.sub("", text).strip()
-
-
-def heading_path(text: str) -> str | None:
-    """文本是章节标题时返回它的编号层级，否则返回 None。
-
-    长度上限用来排除以编号开头、实际是正文的句子。
-    """
-    if len(text) > _MAX_HEADING_CHARS:
-        return None
-    for level, pattern in _HEADING_PATTERNS:
-        if pattern.match(text):
-            return level
-    return None
 
 
 def _push_heading(stack: list[str], text: str, level: int) -> None:
@@ -101,7 +78,7 @@ def extract_page_texts_with_unstructured(path, strategy, allowed_categories):
         text = clean_element_text(element.text)
         if not text:
             continue
-        level = heading_path(text)
+        level = heading_level(text)
         if level is not None:
             _push_heading(stack, text, level)
         page_number = getattr(element.metadata, "page_number", None) or 0

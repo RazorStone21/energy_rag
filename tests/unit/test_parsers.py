@@ -242,17 +242,21 @@ def test_clean_element_text_drops_pure_placeholder_blocks():
 
 
 def test_heading_path_detects_chinese_section_numbering():
-    """中文报告的章节标题有固定编号形式；正文句子即使以编号开头也不该误判。"""
-    from src.parsers.pdf import heading_path
+    """中文报告的章节标题有固定编号形式；正文句子即使以编号开头也不该误判。
+
+    同一套规则同时供 PDF 解析器跟踪章节、供切分器判断能不能把标题挪到下一块，
+    因此放在共享模块里，这里一并核对。
+    """
+    from src.headings import heading_level
 
     for text in ("三、绿证市场活力持续增强", "（一）交易规模实现翻两番", "第一章 总体要求", "2. 装机规模超预期增长"):
-        assert heading_path(text) is not None, text
+        assert heading_level(text) is not None, text
     for text in (
         "0.4% A。",
         "截至2025 年底，全国新型储能累计装机规模13593 万千瓦，同比增长84.3%，储能时长呈逐年上升趋势。",
         "2025 年，全球新型储能新增装机规模约1.1 亿千瓦",
     ):
-        assert heading_path(text) is None, text
+        assert heading_level(text) is None, text
 
 
 def test_heading_stack_never_chains_same_level_headings():
