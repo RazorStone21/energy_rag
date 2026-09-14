@@ -27,6 +27,7 @@ from itertools import combinations
 from pathlib import Path
 
 from src.bootstrap import create_runtime
+from src.chunker import _with_content
 from src.config import load_settings
 
 from .run_retrieval_eval import (
@@ -53,14 +54,6 @@ DUPLICATION_NOTE = (
     "数值越高说明返回的片段越像，真正不同的证据越少——context_top_k 只有 5 个位置，"
     "重复的片段会直接挤掉本可以放进去的其他内容。"
 )
-
-
-def _with_content(chunk, text):
-    """复制片段并替换正文；兼容 LangChain Document 与其他实现。"""
-    copy_method = getattr(chunk, "model_copy", None)
-    if copy_method is not None:
-        return copy_method(update={"page_content": text})
-    return type(chunk)(page_content=text, metadata=dict(chunk.metadata))
 
 
 def overlap_tail(text, char_count, sentence_regex):

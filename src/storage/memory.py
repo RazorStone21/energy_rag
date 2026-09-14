@@ -390,15 +390,6 @@ class MemoryStore:
         text = render_session(session.title, session.turns, session.created_at_ms)
         atomic_write(self.session_path(session.id), text.encode("utf-8"))
 
-    def rename_session(self, session_id: str, title: str) -> Session | None:
-        """更新会话标题，用于首次提问后把“新对话”改成问题摘要。"""
-        session = self.load_session(session_id)
-        if session is None:
-            return None
-        session.title = title or session.title
-        self.save_session(session)
-        return session
-
     def delete_session(self, session_id: str) -> bool:
         """删除一份会话记录，返回是否真的删掉了文件。"""
         path = self.session_path(session_id)

@@ -17,8 +17,6 @@ import time
 # 进度条主体宽度；终端太窄时会再压缩。
 _BAR_WIDTH = 24
 _MIN_BAR_WIDTH = 10
-# 状态行宽度上限，超出就截断，避免自动换行把已经画好的行顶乱。
-_STATUS_WIDTH = 96
 
 
 def format_duration(seconds: float) -> str:
