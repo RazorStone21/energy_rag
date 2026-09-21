@@ -400,7 +400,7 @@ scripts/                    模型下载、片段导出、兼容修复与文档�
 tests/unit/                 无 GPU、无数据库的回归测试
 tests/integration/          真实组件集成测试
 tests/evaluation/           问题集与效果评测脚本
-tests/results/              评测报告与切分对比产物
+tests/results/              评测产物输出目录，跑评测时生成，只保留最新两份报告
 docs/                       架构、代码规范与服务器对照说明
 data/                       运行数据：索引、片段缓存、原始文档与记忆，不纳入版本控制
 models/                     模型权重，不纳入版本控制
@@ -426,8 +426,6 @@ python -m tests.evaluation.run_rag_eval --limit 30         # 按题型分层抽 
 python -m tests.evaluation.run_rag_eval --only-type table numeric
 python -m tests.evaluation.run_rag_eval --limit 60 --resume   # 复用已生成的答案接着跑
 python -m tests.evaluation.run_chunk_compare
-python -m tests.evaluation.run_overlap_eval
-python -m tests.evaluation.run_rewrite_eval
 ```
 
 - 单元测试使用替身验证流程与存储适配接口，不加载模型、不连数据库。

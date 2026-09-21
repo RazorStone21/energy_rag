@@ -38,7 +38,7 @@ models/
 | tests/run_retrieval_eval.py | tests/evaluation/run_retrieval_eval.py |
 | tests/run_rag_eval.py | tests/evaluation/run_rag_eval.py |
 | tests/eval_questions.json | tests/evaluation/questions.json |
-| tests/*_eval_report.json | tests/results/ 下的对应评测报告 |
+| tests/*_eval_report.json | tests/results/ 下的对应评测报告（产物已清理，重跑评测再生成） |
 | README.md、requirements.txt | 保留在项目根目录 |
 
 表中的源码已有对应实现，不额外创建同名空 Python 文件，避免混淆新旧入口。

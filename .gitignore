@@ -19,12 +19,16 @@ data/memory/
 data/gov_doc/
 /models/
 
-# 分块对比评测的中间产物：每个策略一份临时向量库和全量分块导出，重跑评测即可重建。
+# 分块对比评测的大体积产物：每个策略一份临时向量库和全量分块导出，重跑评测即可重建。
 # chunk_compare（切分策略）与 overlap_compare（重叠长度）结构同构，共用同一套规则。
-# 同目录下的 manifest.json、metrics.json、stats.json、summary.json、report.md 是评测结论，需要提交。
+# 结论类文件（manifest/metrics/stats/summary/report.md）此前入库，现已随产物一并清理。
 tests/results/*compare/*/milvus.db/
 tests/results/*compare/*/chunks.json
 tests/results/*compare/*/chunks.pkl
+
+# 重跑评测前的旧报告备份：只是同一份数据换判分模型前后的对照，可随时重跑再生成。
+# 当前结论性报告（rag_eval_report.json、retrieval_eval_report.json）正常入库。
+tests/results/*.bak.json
 
 # Python 运行缓存与构建产物
 __pycache__/

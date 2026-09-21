@@ -125,6 +125,10 @@ front/ 是原生 HTML/CSS/JS，没有构建步骤，由 app.py 挂载在 / 与 /
 create_runtime 每次创建独立实例；同一实例内切分与向量库共用 Embedder，
 检索、重排和生成分别按需加载模型。导入包和查看命令帮助不会加载 GPU 模型。
 
+生成评测的判分模型由 [judge] 单独配置，走 OpenAI 兼容接口，不加载本地权重。
+它只在 tests/evaluation 里使用，因此线上问答路径完全不碰它。判分必须换模型：
+让生成答案的模型给自己打分会让 faithfulness 失去区分度。
+
 应用应在请求之间复用自己持有的实例。配置快照创建后不会自动变化；
 调整参数可用 dataclasses.replace 创建新设置，再构造新 Runtime。
 runtime.release_reranker() 释放其持有的重排模型引用，供生成评测腾出显存；
@@ -257,8 +261,9 @@ max_sheet_cells 限制工作表范围的行列乘积，在工作簿正常模式�
 
 代码、模型权重、原始文档和索引数据都位于项目根目录下：
 models/ 保存模型权重，gov_doc/ 保存原始文档，data/ 保存索引、片段缓存和哈希清单。
-评测产物与生产数据分开存放：tests/evaluation/ 是评测脚本，tests/results/ 是评测报告
-与切分方式对比产物，二者都不参与生产入库和问答。
+评测产物与生产数据分开存放：tests/evaluation/ 是评测脚本，tests/results/ 是评测产物的
+输出目录，二者都不参与生产入库和问答。该目录下的历史报告与切分对比产物已清理，
+需要时重跑对应评测脚本即可再生成。
 config.toml 中的路径均为相对路径，以该文件所在目录为基准解析，默认无需传入 --data-root。
 
 要把数据放在项目外时，用 --data-root 或 ENERGY_RAG_HOME 覆盖根目录：
