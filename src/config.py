@@ -37,6 +37,33 @@ class GenerationSettings:
 
 
 @dataclass(frozen=True)
+class JudgeSettings:
+    """生成评测的判分模型，走 OpenAI 兼容接口，只在评测脚本里使用。
+
+    判分不能复用 generation 的模型：让生成答案的模型给自己打分，指标会系统性
+    偏高。API Key 只存环境变量名，不落进配置文件。
+    """
+
+    base_url: str
+    model: str
+    api_key_env: str
+    max_tokens: int
+    temperature: float
+
+    def __post_init__(self):
+        """校验地址、模型名和输出上限，避免评测跑到一半才发现配置写错。"""
+        if not self.base_url.startswith(("http://", "https://")):
+            raise ValueError("judge.base_url 必须是 http(s) 地址")
+        if not self.model:
+            raise ValueError("judge.model 不能为空")
+        if not self.api_key_env:
+            raise ValueError("judge.api_key_env 必须是环境变量名")
+        positive_int(self.max_tokens, "judge.max_tokens")
+        if self.temperature < 0:
+            raise ValueError("judge.temperature 必须非负")
+
+
+@dataclass(frozen=True)
 class VisionSettings:
     """图片描述的模型和提示词，以及提取图片时使用的尺寸、清晰度限制。"""
 
@@ -188,6 +215,7 @@ class Settings:
     embedding: EmbeddingSettings
     reranker_path: Path
     generation: GenerationSettings
+    judge: JudgeSettings
     vision: VisionSettings
     splitting: SplitSettings
     retrieval: RetrievalSettings
@@ -252,6 +280,7 @@ def _validate_config(raw: dict) -> None:
         raise ValueError("temperature 必须非负，top_p 必须在 (0, 1] 内")
     if not isinstance(generation["enable_thinking"], bool):
         raise ValueError("enable_thinking 必须是布尔值")
+    # 判分模型的校验在 JudgeSettings.__post_init__ 里完成，这里不必重复。
     if splitting["buffer_size"] < 0:
         raise ValueError("buffer_size 不能为负数")
     template = raw["prompts"]["rag"]
@@ -307,6 +336,7 @@ def load_settings(
         raise ValueError("paths.memory 不能放在 paths.documents 目录内")
     embedding = raw["embedding"]
     generation = raw["generation"]
+    judge = raw["judge"]
     vision = raw["vision"]
     splitting = raw["splitting"]
     milvus = raw["milvus"]
@@ -333,6 +363,13 @@ def load_settings(
             temperature=generation["temperature"],
             top_p=generation["top_p"],
             enable_thinking=generation["enable_thinking"],
+        ),
+        judge=JudgeSettings(
+            base_url=judge["base_url"],
+            model=judge["model"],
+            api_key_env=judge["api_key_env"],
+            max_tokens=judge["max_tokens"],
+            temperature=judge["temperature"],
         ),
         vision=VisionSettings(
             path=resolve(vision["path"]),
@@ -363,6 +400,7 @@ def load_settings(
             "embedding": embedding["model_id"],
             "reranker": raw["reranker"]["model_id"],
             "generation": generation["model_id"],
+            "judge": judge["model"],
             "vision": vision["model_id"],
         },
     )

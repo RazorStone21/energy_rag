@@ -61,6 +61,10 @@ def test_explicit_paths_override_environment(tmp_path, monkeypatch):
         ("top_p = 0.9", "top_p = 1.1"),
         ("temperature = 0.1", "temperature = -1"),
         ("hybrid_enabled = true", 'hybrid_enabled = "true"'),
+        # 判分模型走外部 API，地址和 Key 环境变量写错要在开跑前就拦住。
+        ('base_url = "https://api.deepseek.com/v1"', 'base_url = "api.deepseek.com"'),
+        ('api_key_env = "DEEPSEEK_API_KEY"', 'api_key_env = ""'),
+        ("max_tokens = 8192", "max_tokens = 0"),
     ],
 )
 def test_invalid_configuration_fails_before_model_creation(tmp_path, before, after):

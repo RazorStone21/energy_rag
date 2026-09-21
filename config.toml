@@ -29,6 +29,22 @@ temperature = 0.1
 top_p = 0.9
 enable_thinking = false
 
+# 生成评测的判分模型，只在 tests/evaluation 里使用，不参与线上问答。
+# 必须与 generation 分开：判分模型给自己生成的答案打分时会系统性放水——实测
+# 同一个 Qwen3-8B 自评时 81% 的题 faithfulness 恰好得 1.0，指标失去区分度。
+# 这里走 OpenAI 兼容的外部 API：不占显存，也不必为判分再养一个本地大模型。
+# 注意评测会把检索到的文档片段发给该服务，涉密语料不要走外部 API。
+[judge]
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-v4-pro"
+# 从这个环境变量读 API Key；不要把 key 写进配置文件。
+api_key_env = "DEEPSEEK_API_KEY"
+# 上限要同时容纳推理过程和 JSON 结果。deepseek-v4-pro 是推理模型：实测一个
+# 极简 prompt 就产生 900 多个 reasoning token，且同样计入 max_tokens 和计费。
+# 卡太小会让推理没结束就被截断，JSON 不完整，指标直接变成 null。
+max_tokens = 8192
+temperature = 0
+
 [vision]
 model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
 path = "models/Qwen2.5-VL-3B"
