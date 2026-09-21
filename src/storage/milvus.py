@@ -105,3 +105,7 @@ class MilvusStore:
         """根据 source 字段删除指定文件的片段；文件名列表为空时不操作。"""
         if names:
             self.backend.delete(expr=source_expr(names))
+
+    def release(self):
+        """清除 Milvus 对象引用，让它持有的嵌入模型有机会一起释放。"""
+        self._backend = None

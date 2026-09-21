@@ -258,6 +258,7 @@ def test_page_number_footer_is_dropped_before_chunking(monkeypatch):
     from src.parsers.pdf import extract_page_texts_with_unstructured
 
     def element(category, text, page):
+        """构造一个最小元素替身，只带类别、正文和页码。"""
         return SimpleNamespace(
             category=category, text=text, metadata=SimpleNamespace(page_number=page)
         )
@@ -306,6 +307,7 @@ def test_heading_stack_never_chains_same_level_headings():
     from src.parsers.pdf import _push_heading
 
     def titles(stack):
+        """取出标题栈里非空的部分，便于直接比较。"""
         return [title for title in stack if title]
 
     stack = []
@@ -356,17 +358,20 @@ class FakeVision:
     """记录批量与逐张调用，用来验证分批策略和降级路径。"""
 
     def __init__(self, fail_batches=False):
+        """保存是否让批量接口失败，并准备记录调用。"""
         self.fail_batches = fail_batches
         self.batches = []
         self.singles = []
 
     def describe_batch(self, images, prompts):
+        """记录一次批量描述调用，按开关决定是否抛错。"""
         if self.fail_batches:
             raise RuntimeError("显存不足")
         self.batches.append((list(images), list(prompts)))
         return [f"批量描述{prompt}" for prompt in prompts]
 
     def describe(self, image, prompt):
+        """记录一次单张描述调用。"""
         self.singles.append(prompt)
         return f"单张描述{prompt}"
 
@@ -420,6 +425,7 @@ def test_vision_settings_rejects_non_positive_batch_size(tmp_path):
     from src.config import VisionSettings
 
     def build(batch_size):
+        """用给定的批量大小构造视觉配置。"""
         return VisionSettings(
             path=tmp_path,
             max_new_tokens=256,

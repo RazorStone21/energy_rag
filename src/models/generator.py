@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 
 class Generator:
     def __init__(self, settings, loader=None):
@@ -9,17 +11,23 @@ class Generator:
         self.settings = settings
         self._loader = loader
         self._model = None
+        # 预热线程和首个请求可能几乎同时进来，加载要串行，否则同一份权重会被加载两次。
+        self._lock = threading.Lock()
 
     def load(self):
-        """第一次调用时加载文本模型，之后使用已加载的模型；测试时可替换加载函数。"""
-        if self._model is None:
-            loader = self._loader
-            if loader is None:
-                from .local_qwen import load_llm
+        """第一次调用时加载文本模型，之后使用已加载的模型；测试时可替换加载函数。
 
-                loader = load_llm
-            self._model = loader(self.settings)
-        return self._model
+        加载全程持锁：并发的第二个调用会等第一个加载完再复用同一个实例。
+        """
+        with self._lock:
+            if self._model is None:
+                loader = self._loader
+                if loader is None:
+                    from .local_qwen import load_llm
+
+                    loader = load_llm
+                self._model = loader(self.settings)
+            return self._model
 
     def generate(self, prompt):
         """把提示词交给文本模型，从返回的字符串或消息对象中取出答案并去掉首尾空白。"""
@@ -45,7 +53,8 @@ class Generator:
 
     def release(self):
         """释放本组件持有的文本生成模型引用。"""
-        self._model = None
+        with self._lock:
+            self._model = None
 
 
 class VisionGenerator:
@@ -54,6 +63,8 @@ class VisionGenerator:
         self.settings = settings
         self._loader = loader
         self._model = None
+        # 与文本模型同理：入库前的预热或并发描述都可能同时触发加载。
+        self._lock = threading.Lock()
 
     @property
     def available(self):
@@ -61,15 +72,19 @@ class VisionGenerator:
         return (self.settings.path / "config.json").is_file()
 
     def load(self):
-        """首次描述图片时加载视觉模型，其后复用缓存实例。"""
-        if self._model is None:
-            loader = self._loader
-            if loader is None:
-                from .local_qwen import load_vlm
+        """首次描述图片时加载视觉模型，其后复用缓存实例。
 
-                loader = load_vlm
-            self._model = loader(self.settings)
-        return self._model
+        加载全程持锁：并发的第二个调用会等第一个加载完再复用同一个实例。
+        """
+        with self._lock:
+            if self._model is None:
+                loader = self._loader
+                if loader is None:
+                    from .local_qwen import load_vlm
+
+                    loader = load_vlm
+                self._model = loader(self.settings)
+            return self._model
 
     def describe(self, image, prompt):
         """把图片和描述要求交给视觉模型，返回图片的文字说明。"""
@@ -81,4 +96,5 @@ class VisionGenerator:
 
     def release(self):
         """释放本组件持有的视觉模型引用。"""
-        self._model = None
+        with self._lock:
+            self._model = None

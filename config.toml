@@ -16,6 +16,9 @@ device = "cuda"
 [reranker]
 model_id = "BAAI/bge-reranker-v2-m3"
 path = "models/bge-reranker-v2-m3"
+# 单条候选参与打分的最大词元数。模型支持 8192；FlagEmbedding 的默认值是 512，
+# 约合 750 个汉字，超过的部分对重排不可见——长片段会只按开头排序。
+max_length = 8192
 
 [generation]
 model_id = "Qwen/Qwen3-8B"

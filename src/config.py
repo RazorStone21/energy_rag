@@ -12,6 +12,10 @@ from .schemas import positive_int
 # 长期记忆注入提示词的硬上限；约 5600 词元，留给文档片段和回答足够空间。
 MAX_MEMORY_CHARS = 8000
 
+# 重排时单条候选的最大词元数。bge-reranker-v2-m3 支持 8192；
+# FlagEmbedding 默认只截到 512（中文约 750 字），超出的正文对重排不可见。
+DEFAULT_RERANK_MAX_LENGTH = 8192
+
 
 @dataclass(frozen=True)
 class EmbeddingSettings:
@@ -195,6 +199,8 @@ class Settings:
     conversation: ConversationSettings = field(default_factory=ConversationSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     rewrite: RewriteSettings = field(default_factory=RewriteSettings)
+    # 重排模型单次打分的最大词元数；旧配置没写这个字段时按模型上限处理。
+    rerank_max_length: int = DEFAULT_RERANK_MAX_LENGTH
 
 
 def _resolve_data_root(
@@ -239,6 +245,7 @@ def _validate_config(raw: dict) -> None:
         ("vision.min_height", vision["min_height"]),
         ("vision.dpi", vision["dpi"]),
         ("splitting.min_chars", splitting["min_chars"]),
+        ("reranker.max_length", raw["reranker"].get("max_length", DEFAULT_RERANK_MAX_LENGTH)),
     ):
         positive_int(value, name)
     if generation["temperature"] < 0 or not 0 < generation["top_p"] <= 1:
@@ -319,6 +326,7 @@ def load_settings(
             device=embedding["device"],
         ),
         reranker_path=resolve(raw["reranker"]["path"]),
+        rerank_max_length=raw["reranker"].get("max_length", DEFAULT_RERANK_MAX_LENGTH),
         generation=GenerationSettings(
             path=resolve(generation["path"]),
             max_new_tokens=generation["max_new_tokens"],

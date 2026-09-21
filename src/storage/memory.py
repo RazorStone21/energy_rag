@@ -133,9 +133,19 @@ def sanitize_label(label) -> str:
     return " ".join(str(label).split()).replace("`", "'")
 
 
+def session_title(title) -> str:
+    """把会话标题压成单行，避免标题里的换行伪造出消息边界。
+
+    标题取自用户问题的前若干字，而提问框允许换行：不处理的话，`# 标题` 之后的
+    内容会被 parse_session 解析成一条真实的助手消息，既写进会话记录，也会作为
+    历史注入下一轮提示词。str.split() 按所有空白切分，U+2028 这类行分隔符同样会被去掉。
+    """
+    return " ".join(str(title or "").split())
+
+
 def render_session(title: str, turns, created_at_ms: int | None = None) -> str:
     """把标题和消息渲染成会话 markdown，消息正文按边界规则转义。"""
-    lines = [f"# {title or '新对话'}", ""]
+    lines = [f"# {session_title(title) or '新对话'}", ""]
     created = format_timestamp(created_at_ms)
     if created:
         lines += [f"- 创建时间：{created}", ""]
@@ -286,7 +296,8 @@ class MemoryStore:
         session_id = new_session_id()
         session = Session(
             id=session_id,
-            title=title or "新对话",
+            # 与落盘内容保持一致：标题统一压成单行，接口返回值就是文件里那一行。
+            title=session_title(title) or "新对话",
             created_at_ms=started,
             updated_at_ms=started,
         )

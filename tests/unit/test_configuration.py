@@ -232,19 +232,41 @@ def test_retrieval_evaluation_explicitly_disables_hybrid():
 
 
 def test_generation_evaluation_uses_pipeline_evidence():
-    """验证生成评测采用问答流程实际返回的答案和证据。"""
+    """验证生成评测采用问答流程实际返回的答案和证据，并保留题型。"""
     module = load_script("tests/evaluation/run_rag_eval.py")
     runtime = Mock()
     document = SimpleNamespace(page_content="证据", metadata={})
     runtime.pipeline.ask.return_value = AnswerResult("回答", [SearchHit(document)])
-    assert module.collect_predictions([{"question": "问题"}], runtime) == [
+    assert module.collect_predictions([{"question": "问题", "type": "table"}], runtime) == [
         {
             "question": "问题",
+            "type": "table",
             "contexts": ["证据"],
             "answer": "回答",
             "reference": "",
         }
     ]
+
+
+def test_rerank_max_length_defaults_and_rejects_non_positive(tmp_path):
+    """验证重排词元上限可配置：旧配置缺该字段时用模型上限，非法值提前报错。"""
+    configured = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    assert configured["reranker"]["max_length"] == 8192
+    legacy = tmp_path / "legacy.toml"
+    text = (ROOT / "config.toml").read_text(encoding="utf-8").replace("max_length = 8192\n", "")
+    legacy.write_text(text, encoding="utf-8")
+    assert load_settings(legacy).rerank_max_length == 8192
+
+    broken = tmp_path / "broken.toml"
+    broken.write_text(
+        text.replace(
+            'path = "models/bge-reranker-v2-m3"',
+            'path = "models/bge-reranker-v2-m3"\nmax_length = 0',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="reranker.max_length"):
+        load_settings(broken)
 
 
 def test_download_catalog_uses_configured_model_paths(tmp_path):

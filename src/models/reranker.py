@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import replace
 from numbers import Real
 
@@ -10,22 +11,31 @@ from ..schemas import positive_int, valid_query
 
 
 class Reranker:
-    def __init__(self, model_path, factory=None):
-        """保存重排模型路径；可传入自定义加载函数，此时还不加载权重。"""
+    def __init__(self, model_path, factory=None, max_length=None):
+        """保存重排模型路径与最大词元数；可传入自定义加载函数，此时还不加载权重。"""
         self.model_path = model_path
         self._factory = factory
+        # FlagEmbedding 默认把候选截到 512 个词元，中文大约 750 字，超出的正文不参与打分；
+        # 长片段只按开头排序会明显偏离实际相关性，因此默认放宽到模型支持的 8192。
+        self.max_length = max_length
         self._model = None
+        # 预热线程和首个请求可能几乎同时进来，加载要串行，否则同一份权重会被加载两次。
+        self._lock = threading.Lock()
 
     def load(self):
-        """首次重排时加载模型，后续调用复用同一个实例。"""
-        if self._model is None:
-            factory = self._factory
-            if factory is None:
-                from FlagEmbedding import FlagReranker
+        """首次重排时加载模型，后续调用复用同一个实例。
 
-                factory = FlagReranker
-            self._model = factory(str(self.model_path), use_fp16=True)
-        return self._model
+        加载全程持锁：并发的第二个调用会等第一个加载完再复用同一个实例。
+        """
+        with self._lock:
+            if self._model is None:
+                factory = self._factory
+                if factory is None:
+                    from FlagEmbedding import FlagReranker
+
+                    factory = FlagReranker
+                self._model = factory(str(self.model_path), use_fp16=True)
+            return self._model
 
     def rerank(self, query, hits, top_k):
         """计算问题与片段的匹配分数，验证输出后返回排序结果。
@@ -46,6 +56,7 @@ class Reranker:
         raw_scores = model.compute_score(
             pairs,
             normalize=True,
+            max_length=self.max_length,
         )
 
         # 只有一个候选时模型可能返回单个数字，这里统一转成分数列表。
@@ -79,4 +90,5 @@ class Reranker:
 
     def release(self):
         """移除本组件持有的重排模型引用。"""
-        self._model = None
+        with self._lock:
+            self._model = None

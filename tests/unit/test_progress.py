@@ -18,6 +18,7 @@ class FakeTty(io.StringIO):
     """既是可读写的内存流，又自称是终端，用来走交互式渲染分支。"""
 
     def isatty(self) -> bool:
+        """让进度条按终端渲染，走交互式分支。"""
         return True
 
 
@@ -25,25 +26,32 @@ class Recording:
     """记录收到的每一次上报，替代真实进度条。"""
 
     def __init__(self, total):
+        """保存文件总数并准备记录事件。"""
         self.total = total
         self.events = []
 
     def start_file(self, index, name):
+        """记录一个文件开始处理。"""
         self.events.append(("start", index, name))
 
     def note(self, text):
+        """记录一条附加说明。"""
         self.events.append(("note", text))
 
     def finish_file(self, name, count):
+        """记录一个文件处理完成及其片段数。"""
         self.events.append(("finish", name, count))
 
     def fail_file(self, name, reason):
+        """记录一个文件处理失败及原因。"""
         self.events.append(("fail", name, reason))
 
     def start_phase(self, name):
+        """记录进入新的处理阶段。"""
         self.events.append(("phase", name))
 
     def close(self):
+        """记录进度显示结束。"""
         self.events.append(("close",))
 
 

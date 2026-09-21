@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +26,8 @@ from src.context_builder import (
     source_label,
 )
 from src.ingestion import IngestionPipeline, file_hash
-from src.models.generator import VisionGenerator
+from src.models.embedder import Embedder
+from src.models.generator import Generator, VisionGenerator
 from src.models.reranker import Reranker
 from src.parsers.excel import ExcelParser
 from src.parsers.markdown import MarkdownParser
@@ -241,6 +244,127 @@ def test_pipeline_streams_tokens_without_calling_generate():
     assert pieces == [" 答", "案 ", "\n"]
     assert result.answer == "答案"
     generator.generate.assert_not_called()
+
+
+class StreamTokenizer:
+    """只实现流式生成需要的两个接口，避免单元测试加载真实分词器。"""
+
+    def apply_chat_template(self, messages, **kwargs):
+        """忽略对话内容，返回固定提示词文本。"""
+        return "prompt"
+
+    def __call__(self, text, return_tensors=None):
+        """返回一个带 to() 的极小输入替身，够 _prepare 调用即可。"""
+        return SimpleNamespace(to=lambda device: {"input_ids": [[1, 2]]})
+
+
+def generation_settings():
+    """构造 _QwenLLM 用到的生成参数，只保留 _prepare 读取的字段。"""
+    return SimpleNamespace(
+        enable_thinking=False,
+        max_new_tokens=8,
+        temperature=0.0,
+        top_p=1.0,
+    )
+
+
+def test_stream_reports_generation_failure_instead_of_waiting_forever(monkeypatch):
+    """验证生成线程抛错时流式接口报错返回，而不是让调用方永久等待。"""
+    from src.models import local_qwen
+
+    class FailingModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            """模拟显存不足等生成失败：既不产出词元，也不结束流。"""
+            raise RuntimeError("CUDA out of memory")
+
+    # 真实场景里 generate 抛错后 streamer 不会再收到结束标记，消费方会一直等；
+    # 这里把等待上限调小，回归时快速失败而不是挂住整个测试进程。
+    monkeypatch.setattr(local_qwen, "STREAM_TOKEN_TIMEOUT", 1)
+    llm = local_qwen._QwenLLM(FailingModel(), StreamTokenizer(), generation_settings())
+
+    with pytest.raises(RuntimeError, match="生成失败"):
+        list(llm.stream("问题"))
+
+
+def test_stream_forwards_tokens_and_stops_at_the_end_sentinel():
+    """验证正常生成时逐块转发词元，并在收到结束标记后正常返回。"""
+
+    class StreamingModel:
+        device = "cpu"
+
+        def generate(self, streamer=None, **kwargs):
+            """模拟一次正常生成：写入词元后结束流。"""
+            streamer.on_finalized_text("答案")
+            streamer.end()
+
+    from src.models.local_qwen import _QwenLLM
+
+    llm = _QwenLLM(StreamingModel(), StreamTokenizer(), generation_settings())
+    pieces = list(llm.stream("问题"))
+    # 结束流时 transformers 会先补一个空块再放结束标记，都不应改变拼接结果。
+    assert pieces[0] == "答案"
+    assert "".join(pieces) == "答案"
+
+
+def test_stream_times_out_when_the_generation_thread_stops_responding(monkeypatch):
+    """验证生成线程既不产出也不结束时按上限中止，而不是无限期等待。"""
+    from src.models import local_qwen
+
+    release = threading.Event()
+
+    class StuckModel:
+        device = "cpu"
+
+        def generate(self, **kwargs):
+            """模拟卡死的生成：不产出任何词元，也不返回。"""
+            release.wait(10)
+
+    monkeypatch.setattr(local_qwen, "STREAM_TOKEN_TIMEOUT", 1)
+    monkeypatch.setattr(local_qwen, "STREAM_THREAD_JOIN_TIMEOUT", 0.1)
+    llm = local_qwen._QwenLLM(StuckModel(), StreamTokenizer(), generation_settings())
+
+    with pytest.raises(RuntimeError, match="超过"):
+        list(llm.stream("问题"))
+    # 放掉后台线程，避免它拖住测试进程退出。
+    release.set()
+
+
+def test_model_components_load_once_when_called_concurrently():
+    """验证预热线程与首个请求并发时只加载一份模型，不会重复占用显存。"""
+    settings = load_settings(Path(__file__).resolve().parents[2] / "config.toml")
+    calls = []
+
+    def slow_factory(*args, **kwargs):
+        """模拟一次耗时加载，并记录被调用了几次。"""
+        calls.append(1)
+        time.sleep(0.05)
+        return object()
+
+    components = [
+        Embedder(settings.embedding, factory=slow_factory),
+        Generator(settings.generation, loader=slow_factory),
+        VisionGenerator(settings.vision, loader=slow_factory),
+        Reranker(settings.reranker_path, factory=slow_factory),
+    ]
+    for component in components:
+        calls.clear()
+        loaded = []
+        threads = [
+            threading.Thread(target=lambda: loaded.append(component.load())) for _ in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        name = type(component).__name__
+        assert len(calls) == 1, name
+        assert len({id(item) for item in loaded}) == 1, name
+        # 释放后再加载应当重新调用一次加载函数。
+        component.release()
+        component.load()
+        assert len(calls) == 2, name
 
 
 def test_source_label_covers_each_format_and_matches_prompt():
@@ -839,6 +963,28 @@ def test_command_help_does_not_require_models_or_database(args):
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_full_build_with_max_files_requires_explicit_confirmation():
+    """验证限制文件数的全量构建会被拒绝，除非显式确认会替换整个索引。"""
+    root = Path(__file__).resolve().parents[2]
+    rejected = subprocess.run(
+        [sys.executable, "-B", "-S", "main.py", "build", "--max-files", "1"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    # 报错要说清后果和出路，不能只说参数组合非法。
+    assert "--allow-partial-index" in rejected.stderr
+    assert "增量" in rejected.stderr
+    help_text = subprocess.run(
+        [sys.executable, "-B", "-S", "main.py", "build", "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    assert "--allow-partial-index" in help_text.stdout
 
 
 def test_filename_escaping_and_milvus_adapter_contract(tmp_path):

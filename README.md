@@ -135,7 +135,8 @@ python main.py serve --demo
 | --- | --- | --- |
 | `build` | `--incremental` | 只处理新增与变更的文件 |
 | | `--only 文件名 …` | 仅增量模式可用，强制重处理指定文件 |
-| | `--max-files N` | 只处理前 N 个支持的文档，见[运行数据与失败处理](#运行数据与失败处理) |
+| | `--max-files N` | 只处理前 N 个支持的文档；全量构建会替换索引，需配合 `--allow-partial-index`，见[运行数据与失败处理](#运行数据与失败处理) |
+| | `--allow-partial-index` | 确认全量构建只保留前 N 个文件的片段（会删除其余来源的索引） |
 | `ask` | `--no-rerank` | 跳过重排序，进入提示词的片段从 5 条增加到 20 条 |
 | | `--no-hybrid` | 只使用向量召回，不使用 BM25 |
 | | `--no-print` | 不打印最终提示词，答案仍流式显示 |
@@ -235,6 +236,7 @@ python main.py --config /path/to/config.toml --data-root /path/to/data build --i
 | --- | --- | --- |
 | `[paths]` | `documents`、`chunks`、`manifest`、`memory` | 文档目录、片段缓存、构建清单与记忆目录 |
 | `[embedding]` / `[reranker]` / `[generation]` / `[vision]` | `model_id`、`path` | `model_id` 供下载脚本查找仓库，运行时从 `path` 指定的本地目录加载 |
+| `[reranker]` | `max_length` | 单条候选参与重排打分的最大词元数，默认 8192（模型上限）。FlagEmbedding 的默认值是 512，超出的正文对重排不可见，长片段会只按开头排序 |
 | `[splitting]` | `threshold_type`、`threshold_amount`、`min_chars` | 语义切分阈值与片段过滤下限 |
 | `[retrieval]` | `dense_top_k`、`bm25_top_k`、`fusion_top_k`、`context_top_k`、`rrf_k` | 各阶段候选数量与融合参数 |
 | `[milvus]` | `collection`、`connection`、`index`、`search` | 集合名、连接地址与索引/搜索参数 |
@@ -416,8 +418,13 @@ RUN_LLM_TEST=1 python -m pytest tests/integration -v
 
 python -m scripts.export_chunks --stats
 python -m scripts.export_chunks --format json
-python -m tests.evaluation.run_retrieval_eval
-python -m tests.evaluation.run_rag_eval
+python -m tests.evaluation.run_retrieval_eval              # 纯向量 vs 向量+重排
+python -m tests.evaluation.run_retrieval_eval --hybrid     # 融合 vs 融合+重排（问答实际链路）
+python -m tests.evaluation.run_retrieval_eval --hybrid --rrf-k 10   # 对比 RRF 参数
+python -m tests.evaluation.run_rag_eval                    # 生成评测：全部题目
+python -m tests.evaluation.run_rag_eval --limit 30         # 按题型分层抽 30 题
+python -m tests.evaluation.run_rag_eval --only-type table numeric
+python -m tests.evaluation.run_rag_eval --limit 60 --resume   # 复用已生成的答案接着跑
 python -m tests.evaluation.run_chunk_compare
 python -m tests.evaluation.run_overlap_eval
 python -m tests.evaluation.run_rewrite_eval
@@ -426,7 +433,11 @@ python -m tests.evaluation.run_rewrite_eval
 - 单元测试使用替身验证流程与存储适配接口，不加载模型、不连数据库。
 - 集成测试在模型或 PDF 缺失时跳过；真实生成测试额外需要 `RUN_LLM_TEST=1`。
 - 评测脚本经 `create_runtime` 构造运行环境，实际执行需要 GPU、本地模型权重与已构建的索引，产物写入 `tests/results/`。
+- **生成评测很慢**（121 题要数小时），所以支持分层抽样与断点续跑：每生成一题就把结果写进报告文件，
+  中断只损失当前一题；`--limit` 的结果是更大 `--limit` 的前缀，配合 `--resume` 可以分批推进。
+  抽样按题型分层，table、numeric 这类小类不会被随机抽没。
 - 单元测试不能代替真实 GPU、OCR、Milvus 与 RAGAS 链路验证。
+- 检索与生成评测的参数 A/B 结论见[修复记录](docs/fixes-2026-09-21.md)第三节。
 - 代码规范、文档字符串要求与本地检查命令见[代码规范](docs/code_style.md)：
 
   ```bash
@@ -445,6 +456,12 @@ python -m tests.evaluation.run_rewrite_eval
 - 写入中断会留下 `build_manifest.pending`，阻止查询或增量更新混用不一致数据。修复失败原因后执行 `python main.py build`，成功重建会清除该标记。该标记只用于检测中断，不提供跨数据库/文件的事务或自动回滚。
 
 **注意**：`build --max-files 1` 会把索引替换成该单个文件的内容，仅适用于隔离的测试数据目录。
+因此全量构建配合 `--max-files` 会先被拒绝，确认后加 `--allow-partial-index` 才执行，
+执行时会再打一条「其余来源会被删除」的告警。增量构建不受影响：
+`build --incremental --max-files N` 只更新选中的文件，其余来源的片段保持不动。
+
+`data/chunks.pkl` 是词法检索（BM25）的唯一来源，缺失时混合检索会静默退化成只用向量。
+它丢了只能全量重建：增量构建要求缓存存在，会直接报错而不是重建。
 
 ## 已知限制
 
@@ -462,4 +479,5 @@ python -m tests.evaluation.run_rewrite_eval
 | [架构说明](docs/architecture.md) | 模块边界、流程与数据结构、配置迁移对照表 |
 | [代码规范](docs/code_style.md) | 命名、注释、格式约定与本地检查命令 |
 | [服务器对照](docs/server_layout.md) | 服务器目录与本项目的文件对应关系 |
+| [修复记录](docs/fixes-2026-09-21.md) | 可用性缺陷、评测能力与重排截断的改动说明与 A/B 数据 |
 | [前端说明](front/README.md) | 前端文件职责、主题定制与渲染规则 |

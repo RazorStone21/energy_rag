@@ -1,12 +1,14 @@
-"""运行本地检索评测，比较向量搜索与向量搜索加重排，不调用答案生成模型。
+"""运行本地检索评测，比较召回配置与叠加重排后的效果，不调用答案生成模型。
 
 指标：Recall@k / Precision@k / Hit@k / MRR / nDCG@k（k = 1/3/5/10）。
-同时对比「纯向量召回」vs「向量召回 + rerank」，量化重排序收益。
+默认对比「纯向量召回」vs「向量召回 + rerank」；加 --hybrid 则改为对比
+「向量 + BM25 融合」vs「融合后再重排」，后者是问答实际使用的链路。
 
 用法：
     python -m tests.evaluation.run_retrieval_eval              # 使用 tests/evaluation/questions.json
     python -m tests.evaluation.run_retrieval_eval --questions xxx.json
-    python -m tests.evaluation.run_retrieval_eval --no-rerank  # 只跑纯向量召回
+    python -m tests.evaluation.run_retrieval_eval --no-rerank  # 只跑召回，不加重排
+    python -m tests.evaluation.run_retrieval_eval --hybrid --rrf-k 10   # 对比融合权重
 
 报告写入 tests/results/。
 """
@@ -14,10 +16,12 @@
 import argparse
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 from src.bootstrap import create_runtime
 from src.config import load_settings
+from src.schemas import positive_int
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_QUESTIONS = HERE / "questions.json"
@@ -35,6 +39,10 @@ METRIC_NOTES = {
 COMPARE_NOTE = (
     "vector_only = 纯向量召回；vector_rerank = 向量召回 + bge-reranker 重排序。"
     "同一套题目各跑一遍做对比，用于量化重排序（rerank）带来的召回与排序收益。"
+)
+HYBRID_COMPARE_NOTE = (
+    "hybrid_only = 向量召回与 BM25 各自召回后用 RRF 融合；hybrid_rerank = 融合结果再经 "
+    "bge-reranker 重排序。这条链路与 config.toml 的 [retrieval] 参数一致，是问答实际使用的路径。"
 )
 RELEVANCE_NOTE = (
     "「正确片段」的判定：检索到的 chunk 与标注的 relevant_chunks 在忽略空格和换行后存在"
@@ -115,8 +123,12 @@ def _average(metric_list: list[dict]) -> dict:
     return {k: round(sum(m[k] for m in metric_list) / len(metric_list), 4) for k in keys}
 
 
-def run(questions: list[dict], runtime, with_rerank: bool = True) -> dict:
-    """逐题运行纯向量检索及可选重排，跳过没有片段标注的问题并汇总指标。"""
+def run(questions: list[dict], runtime, with_rerank: bool = True, hybrid: bool = False) -> dict:
+    """逐题运行检索及可选重排，跳过没有片段标注的问题并汇总指标。
+
+    hybrid 控制是否启用 BM25 与向量融合：默认关闭，两组之间只差是否重排；
+    打开后测的就是配置里 RRF 参数实际生效的那条链路。
+    """
     per_query = []
     for q in questions:
         query = q["question"]
@@ -124,8 +136,8 @@ def run(questions: list[dict], runtime, with_rerank: bool = True) -> dict:
         if not relevant:
             print(f"[skip] 缺少 relevant_chunks 标注：{query}")
             continue
-        # 关闭 BM25，保证两组只比较是否启用重排；重排结果数量受 context_top_k 限制。
-        hits = runtime.pipeline.retrieve(query, with_rerank=with_rerank, hybrid=False)
+        # 重排结果数量受 context_top_k 限制；hybrid 开关两组一致，比较的仍然只是重排。
+        hits = runtime.pipeline.retrieve(query, with_rerank=with_rerank, hybrid=hybrid)
         docs = [hit.document for hit in hits]
         m = metrics_for_query(docs, relevant)
         m["question"] = query
@@ -171,29 +183,43 @@ def _print_notes():
 
 
 def main():
-    """加载标注问题，对比纯向量与重排检索，并写出指标报告。"""
+    """加载标注问题，对比召回与重排两种配置，并写出指标报告。"""
     parser = argparse.ArgumentParser(description="检索指标评测")
     parser.add_argument("--questions", type=str, default=str(DEFAULT_QUESTIONS))
-    parser.add_argument("--no-rerank", action="store_true", help="只跑纯向量召回")
+    parser.add_argument("--no-rerank", action="store_true", help="只跑召回，不加重排")
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="启用 BM25 与向量融合，评测配置里 RRF 参数实际生效的那条链路",
+    )
+    parser.add_argument(
+        "--rrf-k", type=int, default=None, help="覆盖配置里的 rrf_k，用于对比融合权重"
+    )
     parser.add_argument("--out", type=str, default=str(RESULTS_DIR / "retrieval_eval_report.json"))
     parser.add_argument("--config", default=None)
     parser.add_argument("--data-root", default=None)
     args = parser.parse_args()
-    runtime = create_runtime(load_settings(args.config, args.data_root))
+    settings = load_settings(args.config, args.data_root)
+    if args.rrf_k is not None:
+        positive_int(args.rrf_k, "rrf_k")
+        settings = replace(settings, retrieval=replace(settings.retrieval, rrf_k=args.rrf_k))
+    runtime = create_runtime(settings)
 
     questions = json.loads(Path(args.questions).read_text(encoding="utf-8"))
     print(f"加载 {len(questions)} 条测试问题")
+    mode = "hybrid" if args.hybrid else "vector"
+    mode_label = "混合召回（向量 + BM25 融合）" if args.hybrid else "纯向量召回"
+    if args.hybrid:
+        print(
+            f"融合参数 rrf_k={settings.retrieval.rrf_k}，两路各取 {settings.retrieval.bm25_top_k} 条"
+        )
 
-    report = {}
-
-    if args.no_rerank:
-        report["vector_only"] = run(questions, runtime, with_rerank=False)
-        _print_result("纯向量召回 (vector only)", report["vector_only"])
-    else:
-        report["vector_only"] = run(questions, runtime, with_rerank=False)
-        report["vector_rerank"] = run(questions, runtime, with_rerank=True)
-        _print_result("纯向量召回 (vector only)", report["vector_only"])
-        _print_result("向量召回 + rerank", report["vector_rerank"])
+    report = {"检索方式": f"{mode}（rrf_k={settings.retrieval.rrf_k}）"}
+    report[f"{mode}_only"] = run(questions, runtime, with_rerank=False, hybrid=args.hybrid)
+    _print_result(f"{mode_label}", report[f"{mode}_only"])
+    if not args.no_rerank:
+        report[f"{mode}_rerank"] = run(questions, runtime, with_rerank=True, hybrid=args.hybrid)
+        _print_result(f"{mode_label} + rerank", report[f"{mode}_rerank"])
 
     # 把中文说明一并写入报告文件，并把「指标说明」放到最前面
     report = {
@@ -203,7 +229,9 @@ def main():
             "hit@k": METRIC_NOTES["hit@k"],
             "mrr": METRIC_NOTES["mrr"],
             "ndcg@k": METRIC_NOTES["ndcg@k"],
-            "vector_only vs vector_rerank": COMPARE_NOTE,
+            f"{mode}_only vs {mode}_rerank": (
+                COMPARE_NOTE if not args.hybrid else HYBRID_COMPARE_NOTE
+            ),
             "相关片段判定方式": RELEVANCE_NOTE,
         },
         **report,

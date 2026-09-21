@@ -31,7 +31,7 @@ class Runtime:
         """保存 settings 并创建各组件对象；实际使用模型时才加载权重。"""
         self.settings = settings
         self.embedder = Embedder(settings.embedding)
-        self.reranker = Reranker(settings.reranker_path)
+        self.reranker = Reranker(settings.reranker_path, max_length=settings.rerank_max_length)
         self.generator = Generator(settings.generation)
         self.vision = VisionGenerator(settings.vision)
         # 改写复用问答的同一个文本模型实例，不额外占显存，也不单独加载。
@@ -98,7 +98,7 @@ class Runtime:
         for component in (self.embedder, self.reranker, self.generator, self.vision):
             component.release()
         # Milvus 对象也保存着嵌入模型，因此这里一并清除，让模型有机会释放。
-        self.vector_store._backend = None
+        self.vector_store.release()
 
     def release_reranker(self):
         """清除重排模型引用并尝试回收内存，减少随后生成评测的显存占用。"""

@@ -6,6 +6,11 @@ import torch
 from langchain_core.language_models.llms import LLM
 from pydantic import PrivateAttr
 
+# 流式生成时等待下一个词元的上限（秒）。预填充长提示词和最慢的一步生成都在这个范围内。
+STREAM_TOKEN_TIMEOUT = 120
+# 判定超时后等待生成线程收尾的时间（秒）；线程可能已经卡死，不能在这里无限等待。
+STREAM_THREAD_JOIN_TIMEOUT = 5
+
 
 class _QwenLLM(LLM):
     """Qwen3-8B 4-bit 量化的 LangChain LLM 封装。
@@ -76,7 +81,10 @@ class _QwenLLM(LLM):
 
         generate 会阻塞到全部生成结束，因此放到后台线程执行；
         主线程从 TextIteratorStreamer 迭代取出新增词元，skip_prompt 保证不重复首部提示词。
+        生成失败时异常发生在后台线程里，这里把它转成主线程可见的 RuntimeError：
+        否则调用方会一直等一个再也不会产出内容的队列，Web 服务里表现为锁不释放。
         """
+        import queue
         from threading import Thread
 
         from transformers import TextIteratorStreamer
@@ -86,20 +94,41 @@ class _QwenLLM(LLM):
             self._tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
+            # 不传超时时队列默认永久阻塞，generate 抛错后消费者再也醒不过来。
+            timeout=STREAM_TOKEN_TIMEOUT,
         )
+        # 后台线程不能直接把异常抛给主线程，先把失败原因放在列表里，由主线程重新抛出。
+        failure: list[BaseException] = []
 
         def run_generate():
-            """在后台线程中执行生成，把结果写入 streamer 供主线程消费。"""
-            with torch.no_grad():
-                self._model.generate(**inputs, streamer=streamer, **gen_kwargs)
+            """在后台线程中执行生成，失败时记录原因并结束 streamer。"""
+            try:
+                with torch.no_grad():
+                    self._model.generate(**inputs, streamer=streamer, **gen_kwargs)
+            except BaseException as exc:  # 显存不足、输入过长等都从这里退出
+                failure.append(exc)
+                # generate 正常结束时自己会调用 end()；异常路径必须补上，否则主线程永久等待。
+                streamer.end()
 
         thread = Thread(target=run_generate)
         thread.start()
+        timed_out = False
         try:
             yield from streamer
+        except queue.Empty:
+            # 超时说明后台线程既不产出也不结束，交给调用方处理，不再无限等待。
+            timed_out = True
         finally:
-            # 调用方提前停止迭代时同样等待线程收尾，避免生成任务悬挂。
-            thread.join()
+            if timed_out:
+                thread.join(timeout=STREAM_THREAD_JOIN_TIMEOUT)
+            else:
+                # 调用方提前停止迭代时同样等待线程收尾，避免生成任务悬挂。
+                thread.join()
+
+        if timed_out:
+            raise RuntimeError(f"等待生成超过 {STREAM_TOKEN_TIMEOUT} 秒仍无新内容，已中止本轮")
+        if failure:
+            raise RuntimeError("生成失败，未能产出完整答案") from failure[0]
 
 
 class _QwenVL:

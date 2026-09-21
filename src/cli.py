@@ -34,7 +34,17 @@ def _create_argument_parser() -> argparse.ArgumentParser:
     build_parser = subcommands.add_parser(
         "build", help="构建文档索引（PDF、TXT、Markdown、DOCX、XLSX）"
     )
-    build_parser.add_argument("--max-files", type=int, default=None, help="仅处理前 N 个支持的文档")
+    build_parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="只处理前 N 个支持的文档；全量构建会替换索引，需配合 --allow-partial-index",
+    )
+    build_parser.add_argument(
+        "--allow-partial-index",
+        action="store_true",
+        help="确认全量构建只保留前 N 个文件的片段（会删除其余来源的索引）",
+    )
     build_parser.add_argument("--incremental", action="store_true", help="增量更新")
     build_parser.add_argument(
         "--only", nargs="+", default=None, help="增量模式下强制重处理指定文件"
@@ -64,6 +74,14 @@ def _validate_arguments(parser: argparse.ArgumentParser, args: argparse.Namespac
             parser.error("--max-files 必须为正整数")
         if args.only is not None and not args.incremental:
             parser.error("--only 必须与 --incremental 一起使用")
+        # 全量构建会替换整个索引：限制文件数就等于把未选中的来源全部删掉，
+        # 而增量构建只更新选中的文件、保留其余来源，所以只有全量需要显式确认。
+        if args.max_files is not None and not args.incremental and not args.allow_partial_index:
+            parser.error(
+                "全量构建配合 --max-files 会把索引替换为前 N 个文件的内容，"
+                "其余来源的片段会被删除；确认请加 --allow-partial-index，"
+                "或改用增量构建 --incremental --max-files N"
+            )
     elif args.cmd == "serve":
         if not 0 < args.port < 65536:
             parser.error("--port 必须在 1 到 65535 之间")
@@ -79,6 +97,12 @@ def _run_build(runtime: Runtime, args: argparse.Namespace) -> int:
     """
     if not runtime.vision.available:
         logging.warning("未找到视觉模型，跳过图片描述；仍提取正文与表格。")
+    if args.max_files is not None and not args.incremental:
+        # 参数校验已要求显式确认，这里再把后果写在日志里，避免只看输出时误判。
+        logging.warning(
+            "全量构建只处理前 %d 个文件：索引中的其余来源会被删除。",
+            args.max_files,
+        )
     result = runtime.ingestion.build(
         max_files=args.max_files,
         incremental=args.incremental,
