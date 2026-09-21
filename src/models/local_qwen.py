@@ -32,8 +32,12 @@ class _QwenLLM(LLM):
 
     @property
     def _llm_type(self) -> str:
-        """向 LangChain 提供当前语言模型的类型标识。"""
-        return "qwen3-8b"
+        """向 LangChain 提供当前语言模型的类型标识。
+
+        取模型目录名而不是写死型号：[generation] 的 path 可以改，写死的名字
+        会和实际加载的模型对不上。
+        """
+        return self._settings.path.name
 
     def _prepare(self, prompt: str):
         """套用聊天模板并编码提示词，返回模型输入和本轮生成参数。
@@ -51,10 +55,12 @@ class _QwenLLM(LLM):
         gen_kwargs = dict(
             max_new_tokens=self._settings.max_new_tokens,
             do_sample=self._settings.temperature > 0,
-            temperature=self._settings.temperature,
-            top_p=self._settings.top_p,
             repetition_penalty=1.05,
         )
+        # 关闭采样时 temperature / top_p 不参与生成，传进去会被判为无效参数并告警。
+        if self._settings.temperature > 0:
+            gen_kwargs["temperature"] = self._settings.temperature
+            gen_kwargs["top_p"] = self._settings.top_p
         return inputs, gen_kwargs
 
     def _call(self, prompt: str, stop=None, run_manager=None, **kwargs) -> str:
