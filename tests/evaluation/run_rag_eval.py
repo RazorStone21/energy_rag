@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import random
+import re
 from math import isnan
 from pathlib import Path
 
@@ -62,6 +63,12 @@ DEFAULT_WORKERS = 4
 SCORE_BATCH = 8
 # 单个评分操作允许等待的秒数，比原先的 300 秒放宽，避免排队时误触发重试。
 SCORE_TIMEOUT = 600
+
+# 拒答判定用的固定表述。提示词要求"没有依据时明确说无法回答"，因此 negative 题
+# 命中这些词即视为正确拒答；这是粗判，只用于单列拒答率，不参与分项打分。
+REFUSAL_PATTERNS = ("无法回答", "无法确定", "不能回答", "没有提供", "未提供", "未包含", "未提及")
+# 确定性数字校验用的数字模式：只认阿拉伯数字，中文数字不在覆盖范围内。
+NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)?")
 
 
 def select_questions(questions: list[dict], limit, only_types, seed: int) -> list[dict]:
@@ -99,6 +106,10 @@ def select_questions(questions: list[dict], limit, only_types, seed: int) -> lis
 def collect_predictions(questions: list[dict], runtime, on_sample=None) -> list[dict]:
     """逐题生成答案，记录问题、实际使用的片段、答案和参考答案，供后续评分。
 
+    contexts 是送进判分的片段正文，context_keys 是这些片段在索引里的位置
+    （来源、页码、类型、页内块序号）：指标掉下来时能直接定位到是哪条片段变了，
+    不必靠人工比对正文。
+
     每题完成后调用 on_sample，让调用方把已完成的结果落盘：整轮跑完可能要几小时，
     中途中断时已生成的答案不该丢掉。
     """
@@ -107,12 +118,20 @@ def collect_predictions(questions: list[dict], runtime, on_sample=None) -> list[
         query = q["question"]
         result = runtime.pipeline.ask(query)
         contexts = [hit.document.page_content for hit in result.evidence]
+        context_keys = [
+            {
+                key: hit.document.metadata.get(key)
+                for key in ("source", "page", "type", "block_index", "table_index")
+            }
+            for hit in result.evidence
+        ]
         answer = result.answer
         samples.append(
             {
                 "question": query,
                 "type": q.get("type", ""),
                 "contexts": contexts,
+                "context_keys": context_keys,
                 "answer": answer.strip(),
                 "reference": q.get("reference_answer", ""),
             }
@@ -140,14 +159,91 @@ def read_report(path: Path) -> dict:
     return previous if isinstance(previous, dict) else {}
 
 
-def load_completed_samples(report: dict, questions: list[dict]) -> list[dict]:
+def load_completed_samples(report: dict, questions: list[dict], fingerprint: str = "") -> list[dict]:
     """读取上次未跑完的生成结果，按题目顺序复用，供 --resume 跳过已完成的题。
 
     只认报告里带 answer 的条目；题目仍在本轮范围内才复用。答案与判分模型无关，
-    换判分模型后仍然可以复用。
+    换判分模型后仍然可以复用；但它与索引强相关——重解析、重切分之后旧答案出自
+    另一份片段集合，与新答案混进同一份报告会让指标失去意义，因此索引指纹不一致时
+    一律不复用（与判分模型变化同一套规则）。
     """
+    stored = str((report.get("index") or {}).get("fingerprint", ""))
+    if fingerprint and stored != str(fingerprint):
+        return []
     completed = {item.get("question"): item for item in report.get("samples", [])}
     return [completed[q["question"]] for q in questions if q["question"] in completed]
+
+
+def index_fingerprint(runtime) -> dict:
+    """给当前索引算一个短指纹，用来判断报告是否出自同一份片段集合。
+
+    只取来源、页码、页内块序号、表格行号与正文哈希：换解析器、换切分器或换切片
+    参数重建索引后指纹都会变。不能拿 build_manifest 的文件哈希代替——它记录的是
+    原始文件，换了提取方式它并不变，正是最需要发现的那种情况。
+    """
+    import hashlib
+
+    chunks = runtime.chunk_store.load_chunks()
+    digest = hashlib.sha256()
+    for chunk in chunks:
+        metadata = chunk.metadata
+        position = "|".join(
+            str(metadata.get(key, ""))
+            for key in ("source", "page", "block_index", "table_index", "row_start")
+        )
+        digest.update(position.encode("utf-8"))
+        digest.update(hashlib.sha256(chunk.page_content.encode("utf-8")).digest())
+    return {"fingerprint": digest.hexdigest()[:16], "chunks": len(chunks)}
+
+
+def refusal_stats(samples: list[dict]) -> dict:
+    """统计 negative 题的拒答率。
+
+    答案不在语料中时正确行为是明确说无法回答，而 RAGAS 会给这种回答打 0 分
+    （见报告 §3.3），因此必须单列，不并入四个均值。
+    """
+    negatives = [sample for sample in samples if sample.get("type") == "negative"]
+    refused = [
+        sample
+        for sample in negatives
+        if any(pattern in sample.get("answer", "") for pattern in REFUSAL_PATTERNS)
+    ]
+    return {
+        "n": len(negatives),
+        "refused": len(refused),
+        "rate": round(len(refused) / len(negatives), 4) if negatives else None,
+        "note": "negative 题的正确行为是拒答，不并入 RAGAS 四项均值",
+    }
+
+
+def numeric_support(samples: list[dict]) -> dict:
+    """确定性数字校验：答案里的数字有多少能在检索片段里找到依据。
+
+    不依赖任何模型，用来交叉验证 faithfulness：它抓的是"答案写了、上下文里没有"，
+    这正是幻觉里最危险的一种。只做原样数字匹配，中文数字、千分位与四舍五入不在
+    覆盖范围内，因此结果是下界而不是真值。
+    """
+    checked = total = unsupported_total = 0
+    offenders = []
+    for sample in samples:
+        numbers = set(NUMBER_PATTERN.findall(sample.get("answer", "")))
+        if not numbers:
+            continue
+        context = "".join(sample.get("contexts", []))
+        unsupported = sorted(number for number in numbers if number not in context)
+        checked += 1
+        total += len(numbers)
+        unsupported_total += len(unsupported)
+        if unsupported:
+            offenders.append({"question": sample["question"], "numbers": unsupported})
+    return {
+        "n": checked,
+        "numbers": total,
+        "unsupported": unsupported_total,
+        "unsupported_rate": round(unsupported_total / total, 4) if total else None,
+        "questions_with_unsupported": offenders[:20],
+        "note": "原样数字匹配，是下界；中文数字与四舍五入不在覆盖范围内",
+    }
 
 
 def load_completed_scores(report: dict, questions: list[dict], judge: str) -> list[dict]:
@@ -374,9 +470,19 @@ def main():
     print(f"判分模型：{settings.judge.model}（{settings.judge.base_url}）")
     print(f"本轮评测 {len(questions)} 题（题库过滤与抽样后），开始生成回答…")
 
+    # 生成和评分都需要运行环境；模型是延迟加载的，提前创建不占显存。
+    runtime = create_runtime(settings)
+    index_info = index_fingerprint(runtime)
+    print(f"索引指纹：{index_info['fingerprint']}（{index_info['chunks']} 条片段）")
+
     previous = read_report(out_path)
-    samples = load_completed_samples(previous, questions) if args.resume else []
+    samples = load_completed_samples(previous, questions, index_info["fingerprint"]) if args.resume else []
     score_rows = load_completed_scores(previous, questions, settings.judge.model) if args.resume else []
+    if args.resume and previous.get("samples") and not samples:
+        print(
+            "[resume] 已有答案出自另一份索引"
+            f"（{((previous.get('index') or {}).get('fingerprint') or '未知')}），不复用。"
+        )
     if args.resume and previous.get("scores") and not score_rows:
         print(f"[resume] 已有评分出自 {previous.get('judge', '未知判分模型')}，与当前判分模型不同，不复用。")
     done = {sample["question"] for sample in samples}
@@ -386,14 +492,12 @@ def main():
         print(f"[resume] 复用已评分的 {len(score_rows)} 题，跳过评分。")
     pending = [q for q in questions if q["question"] not in done]
 
-    # 生成和评分都需要运行环境；模型是延迟加载的，提前创建不占显存。
-    runtime = create_runtime(settings)
-
     def build_report(current, scored, error=None):
         """组装报告；生成与评分都可能中途中断，因此两者都要能单独写盘。
 
-        报告里记录判分模型：换判分模型后分数不可直接横向比较，必须能看出
-        某份报告是哪一次、由哪个模型评出来的。
+        报告里同时记录判分模型与索引指纹：换判分模型后分数不可横向比较，换索引
+        （重解析、重切分）后答案与片段也不可比，必须能看出某份报告是哪一次、
+        由哪个模型、在哪份索引上评出来的。
         """
         report = {
             "n": len(current),
@@ -401,11 +505,16 @@ def main():
             "seed": args.seed,
             "only_type": args.only_type,
             "judge": runtime.settings.judge.model,
+            "index": index_info,
             "samples": current,
             "scores": scored,
         }
         if scored:
             report["ragas"] = average_scores(scored, args.workers)
+        # 两条不依赖模型的常驻指标：negative 题的正确行为是拒答，RAGAS 会把它算成 0 分；
+        # 数字校验用来交叉验证 faithfulness，抓"答案写了、上下文里没有"。
+        report["negative_refusal"] = refusal_stats(current)
+        report["numeric_support"] = numeric_support(current)
         if error is not None:
             report["ragas_error"] = error
         return report

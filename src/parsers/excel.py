@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from contextlib import ExitStack
 from datetime import date, datetime, time
-from html import escape
 from pathlib import Path
 
 from ..config import ExcelSettings
 from ..schemas import ParseResult
+from .tables import escape_cell
 
 
 def _format_value(value):
@@ -39,14 +39,8 @@ def _cell_text(cell, cached_cell):
 
 
 def _escape_cell(value):
-    """转义竖线、反斜线和换行，防止单元格内容改变 Markdown 表格结构。"""
-    return (
-        escape(value)
-        .replace("\\", "\\\\")
-        .replace("|", "\\|")
-        .replace("\r\n", "\n")
-        .replace("\n", "<br>")
-    )
+    """转义竖线、反斜线和换行；规则与 PDF 侧共用，见 parsers/tables.py。"""
+    return escape_cell(value)
 
 
 class ExcelParser:

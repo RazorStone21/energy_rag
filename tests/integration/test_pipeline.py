@@ -8,7 +8,6 @@ import pytest
 
 from src.bootstrap import create_runtime
 from src.config import load_settings
-from src.parsers.pdf import PDFParser
 
 
 @pytest.fixture
@@ -18,14 +17,17 @@ def settings():
 
 
 def test_pdf_extraction_has_text(settings):
-    """验证真实 PDF 能提取非空正文；没有测试文档时跳过。"""
+    """验证真实 PDF 经 MinerU 能提取非空正文与页码；没有测试文档时跳过。"""
     pdfs = sorted(settings.doc_dir.glob("*.pdf"))
     if not pdfs:
         pytest.skip("未配置测试 PDF")
     runtime = create_runtime(settings)
-    parser = PDFParser(runtime.vision, settings.vision)
-    docs = parser.parse_text(pdfs[0])
-    assert docs and any(doc.page_content.strip() for doc in docs)
+    parsed = runtime.parser.parse(pdfs[0])
+    assert not parsed.errors, parsed.errors
+    assert parsed.texts and all(doc.page_content.strip() for doc in parsed.texts)
+    # MinerU 的页码从 1 起，块序号用于去重与引用定位。
+    first = parsed.texts[0].metadata
+    assert first["page"] >= 1 and first["block_index"] >= 1
 
 
 def test_build_small_index_and_retrieve(tmp_path, settings):

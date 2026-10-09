@@ -123,6 +123,34 @@ def _average(metric_list: list[dict]) -> dict:
     return {k: round(sum(m[k] for m in metric_list) / len(metric_list), 4) for k in keys}
 
 
+def annotation_alignment(questions: list[dict], chunks: list) -> dict:
+    """统计标注与当前索引的对齐情况，写进报告供读报告的人判断指标有多硬。
+
+    命中判定（is_relevant）依赖一个前提：标注文本取自当前索引里的片段，因此能被子串
+    或 3-gram 相似度匹配上。换解析器、换切分方式之后这个前提会变弱——标注还是上一版
+    抽取的原文，索引却已经重切过，指标下降可能只是对齐漂了而不是检索变差。这里只做
+    便宜的子串检查：它是下界，但足以看出对齐是否已经坏掉。
+    """
+    haystack = "\n".join(_strip_layout(chunk.page_content) for chunk in chunks)
+    total = aligned = 0
+    missing = []
+    for question in questions:
+        for annotation in question.get("relevant_chunks") or []:
+            total += 1
+            needle = _strip_layout(annotation)
+            if needle and needle in haystack:
+                aligned += 1
+            elif len(missing) < 20:
+                missing.append({"question": question["question"], "annotation": annotation[:60]})
+    return {
+        "annotations": total,
+        "aligned": aligned,
+        "rate": round(aligned / total, 4) if total else None,
+        "not_aligned": missing,
+        "note": "只做子串检查，是下界；对齐率明显偏低时 Recall 类指标不可与他版对比",
+    }
+
+
 def run(questions: list[dict], runtime, with_rerank: bool = True, hybrid: bool = False) -> dict:
     """逐题运行检索及可选重排，跳过没有片段标注的问题并汇总指标。
 
@@ -233,7 +261,13 @@ def main():
                 COMPARE_NOTE if not args.hybrid else HYBRID_COMPARE_NOTE
             ),
             "相关片段判定方式": RELEVANCE_NOTE,
+            "标注对齐": (
+                "标注与当前索引的对齐率：命中判定要求标注能匹配到某条片段，"
+                "换解析器或换切分方式后对齐会变弱，此时 Recall 类指标不能与其他版本对比。"
+            ),
         },
+        # 对齐诊断随报告一起落盘：它决定了这份报告的 Recall 值能被当作多硬的证据。
+        "标注对齐": annotation_alignment(questions, runtime.chunk_store.load_chunks()),
         **report,
     }
 

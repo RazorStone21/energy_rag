@@ -4,7 +4,7 @@
 
     semantic        语义切分，按相邻句组的语义差异分布选断点（生产默认）
     recursive_char  递归字符切分，优先在段落/换行/中文标点处断开，固定长度加重叠
-    element         Unstructured 元素切分，按标题层级聚合，利用文档结构
+    block           MinerU 的版面块原样入库，不做任何切分（对照组）
 
 每种方式有自己独立的 Milvus 库和片段缓存，互不干扰：
 
@@ -23,13 +23,13 @@
 切分方式是同一份常数，不影响横向比较，所以脚本不提供该开关。
 
 三种策略都走生产的检索链路（向量 + BM25 + RRF，可选 rerank），差异只来自切分方式。
-semantic 与 recursive_char 共用同一份解析结果，只换切分器；element 直接对 PDF 元素
-聚合，不经过按页合并正文的步骤。
+semantic 与 recursive_char 共用同一份解析结果，只换切分器；block 直接用解析出的
+版面块，用来回答"语义切分到底有没有收益"。
 
 用法：
     python -m tests.evaluation.run_chunk_compare --max-files 5     # 建议先小集合试跑
     python -m tests.evaluation.run_chunk_compare                   # 全量 44 个 PDF
-    python -m tests.evaluation.run_chunk_compare --strategies semantic element
+    python -m tests.evaluation.run_chunk_compare --strategies semantic block
     python -m tests.evaluation.run_chunk_compare --no-rerank       # 只跑纯向量召回
 """
 
@@ -58,12 +58,8 @@ from tests.evaluation.run_retrieval_eval import (
 HERE = Path(__file__).resolve().parent
 DEFAULT_QUESTIONS = HERE / "questions.json"
 DEFAULT_OUT_DIR = HERE.parent / "results" / "chunk_compare"
-STRATEGIES = ("semantic", "recursive_char", "element")
+STRATEGIES = ("semantic", "recursive_char", "block")
 HEADLINE = ("recall@5", "hit@5", "mrr", "ndcg@5")
-
-# unstructured 元素类别的保留集合，与生产 PDFParser 的 fast 通道一致。
-# 不含 Table，表格统一由表格基线提供，避免与元素切分的结果重复计入。
-ELEMENT_CATEGORIES = ("Title", "NarrativeText", "Text", "ListItem")
 
 # 递归字符切分的分隔符优先级，靠前的先尝试；空串表示最后按字符硬切。
 RECURSIVE_SEPARATORS = ["\n\n", "\n", "。", "；", "！", "？", "，", " ", ""]
@@ -85,9 +81,10 @@ def build_pdf_parser(settings):
     注册表只暴露统一的 parse，无法单独取到 PDF 解析器；这里按生产的构造方式
     直接创建，并用 NoVision 关掉图片描述。
     """
+    from src.parsers.mineru_engine import MineruEngine
     from src.parsers.pdf import PDFParser
 
-    return PDFParser(NoVision(), settings.vision)
+    return PDFParser(NoVision(), settings.vision, MineruEngine(settings.mineru), settings.mineru)
 
 
 def list_pdfs(doc_dir: Path, max_files: int | None) -> list[Path]:
@@ -96,24 +93,27 @@ def list_pdfs(doc_dir: Path, max_files: int | None) -> list[Path]:
     return paths[:max_files] if max_files else paths
 
 
-def parse_texts(parser, path: Path, cache: dict) -> list:
-    """解析正文并在策略之间复用，解析是整条链路里最慢的一步。"""
+def parse_document(parser, path: Path, cache: dict) -> ParseResult:
+    """解析一份 PDF 并在策略之间复用，解析是整条链路里最慢的一步。"""
     if path.name not in cache:
-        cache[path.name] = parser.parse_text(path)
+        parsed = parser.parse(path)
+        if parsed.errors:
+            raise RuntimeError("; ".join(parsed.errors))
+        cache[path.name] = parsed
     return cache[path.name]
 
 
 def table_baseline(parser, paths: list[Path], cache: dict) -> list:
-    """抽取表格片段作为三种策略共同的基线，与切分方式无关，只取一次。"""
+    """抽取表格片段作为三种策略共同的基线，与切分方式无关，只取一次。
+
+    表格与正文同源于一次 MinerU 解析，因此这里复用的是同一份结果。
+    """
     tables = []
     for path in paths:
-        if path.name not in cache:
-            try:
-                cache[path.name] = parser.table_extractor(path)
-            except Exception as exc:  # 单个文件表格失败不影响其他文件
-                print(f"[warn] 表格抽取失败 {path.name}: {exc}")
-                cache[path.name] = []
-        tables.extend(cache[path.name])
+        try:
+            tables.extend(parse_document(parser, path, cache).tables)
+        except Exception as exc:  # 单个文件失败不影响其他文件
+            print(f"[warn] 表格抽取失败 {path.name}: {exc}")
     return tables
 
 
@@ -142,54 +142,12 @@ def make_recursive_factory(chunk_size: int, chunk_overlap: int):
     return factory
 
 
-def split_elements(path: Path) -> list:
-    """用 unstructured 的 fast 通道解析元素，抽不到文字时退回 OCR 通道。"""
-    from unstructured.partition.pdf import partition_pdf
+def block_chunks(parser, path: Path, options: dict) -> list:
+    """MinerU 的版面块原样作为片段，不做任何切分。
 
-    for strategy in ("fast", "ocr_only"):
-        elements = partition_pdf(
-            filename=str(path),
-            strategy=strategy,
-            languages=["chi_sim"],
-        )
-        if elements:
-            return elements
-    return []
-
-
-def element_chunks(path: Path, max_characters: int, new_after: int, combine_under: int) -> list:
-    """按标题层级聚合元素切分，跨页 section 取第一页作为页码。
-
-    保留类别与生产 fast 通道一致，因此表格仍由统一的基线提供，不在这里重复。
+    对照组：语义切分若真有收益，就该体现在相对这里的召回提升上。
     """
-    from langchain_core.documents import Document
-    from unstructured.chunking.title import chunk_by_title
-
-    kept = [element for element in split_elements(path) if element.category in ELEMENT_CATEGORIES]
-    if not kept:
-        return []
-    sections = chunk_by_title(
-        kept,
-        max_characters=max_characters,
-        new_after_n_chars=new_after,
-        combine_text_under_n_chars=combine_under,
-    )
-    documents = []
-    for section in sections:
-        text = (section.text or "").strip()
-        if not text:
-            continue
-        page = getattr(section.metadata, "page_number", None)
-        # 跨页 section 的页码是列表，取第一页代表该片段所在位置。
-        if isinstance(page, list):
-            page = page[0] if page else None
-        documents.append(
-            Document(
-                page_content=text,
-                metadata={"source": path.name, "page": page or 0, "type": "text"},
-            )
-        )
-    return documents
+    return parse_document(parser, path, options["parse_cache"]).texts
 
 
 def build_chunks(strategy: str, parser, paths: list[Path], chunker, options: dict):
@@ -200,18 +158,12 @@ def build_chunks(strategy: str, parser, paths: list[Path], chunker, options: dic
     chunks, failed = [], {}
     for path in paths:
         try:
-            if strategy == "element":
-                text_chunks = element_chunks(
-                    path,
-                    options["element_max_characters"],
-                    options["element_new_after"],
-                    options["element_combine_under"],
-                )
-                text_chunks = filter_noise(text_chunks, options["min_chars"])
+            if strategy == "block":
+                text_chunks = filter_noise(block_chunks(parser, path, options), options["min_chars"])
             else:
                 # 只把正文交给 Chunker，表格由基线统一提供，避免重复计入。
-                parsed = ParseResult(texts=parse_texts(parser, path, options["parse_cache"]))
-                text_chunks = chunker.split(parsed)
+                parsed = parse_document(parser, path, options["parse_cache"])
+                text_chunks = chunker.split(ParseResult(texts=parsed.texts))
             if not text_chunks:
                 raise ValueError("没有切出可用片段")
             chunks.extend(text_chunks)
@@ -372,9 +324,6 @@ def main():
     parser.add_argument("--no-tables", action="store_true", help="不加入表格基线片段")
     parser.add_argument("--recursive-chunk-size", type=int, default=800)
     parser.add_argument("--recursive-chunk-overlap", type=int, default=100)
-    parser.add_argument("--element-max-characters", type=int, default=800)
-    parser.add_argument("--element-new-after", type=int, default=700)
-    parser.add_argument("--element-combine-under", type=int, default=200)
     args = parser.parse_args()
 
     settings = load_settings(args.config, args.data_root)
@@ -389,7 +338,7 @@ def main():
     if args.no_tables:
         print("已关闭表格基线，只对比文本片段")
 
-    # 解析和表格结果在策略之间复用；element 走自己的元素解析，不用这两个缓存。
+    # 解析和表格结果在策略之间复用：一次 MinerU 解析同时产出正文与表格。
     options = {
         "out_dir": args.out_dir,
         "parser": build_pdf_parser(settings),
@@ -400,9 +349,6 @@ def main():
         "table_cache": {},
         "recursive_chunk_size": args.recursive_chunk_size,
         "recursive_chunk_overlap": args.recursive_chunk_overlap,
-        "element_max_characters": args.element_max_characters,
-        "element_new_after": args.element_new_after,
-        "element_combine_under": args.element_combine_under,
     }
 
     results, stats = {}, {}
@@ -433,9 +379,6 @@ def main():
         "参数": {
             "recursive_chunk_size": args.recursive_chunk_size,
             "recursive_chunk_overlap": args.recursive_chunk_overlap,
-            "element_max_characters": args.element_max_characters,
-            "element_new_after": args.element_new_after,
-            "element_combine_under": args.element_combine_under,
             "表格基线": not args.no_tables,
             "重排对比": not args.no_rerank,
         },

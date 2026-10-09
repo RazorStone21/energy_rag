@@ -210,9 +210,11 @@ save=False 仍写 Milvus，并清除旧本地缓存及清单，避免词法索�
 `IngestionPipeline` 使用注册器提供的后缀集合发现文件，再通过 `parse(path)` 获取 `ParseResult`。
 新增格式时，实现对应解析器并在 Runtime 注册即可进入现有切分与存储流程。
 
-PDF 的正文和回退策略仍在 `pdf.py`，表格与图片辅助函数已从 `multimodal.py` 迁到
-`pdf_elements.py`，旧文件已移除。单独提取 PDF 正文可直接使用 `PDFParser.parse_text(path)`；
-`runtime.parser` 现在是注册器，只提供统一解析入口，不再提供 PDF 专用的 `parse_text` 方法。
+PDF 的版面解析交给 MinerU：`pdf.py` 是它的调用方，`mineru_engine.py` 负责模型生命周期
+（懒加载、单文件结果复用、`release()` 归还显存），`mineru_pdf.py` 把 MinerU 的内容项转成
+正文、表格与图表片段（页码 +1、页内块序号、题注、HTML 表格转 Markdown）。正文、表格与
+图表位置同源于一次解析，因此不再按类型分别提取；`runtime.parser` 是注册器，只提供统一
+解析入口。设计取舍与实测结论见 `docs/mineru-migration-2026-09-22.md`。
 
 TXT 严格读取 UTF-8（含 BOM），正文不主动切段，不添加页码；读取和编码失败通过 errors 返回。
 ContextBuilder 仅在存在有效页码时展示页码，TXT 引用显示来源文件名。

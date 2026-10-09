@@ -134,6 +134,12 @@ class IngestionPipeline:
             missing = sorted(set(only) - set(paths_by_name))
             if missing:
                 raise ValueError(f"--only files not found: {missing}")
+        # 解析链路指纹：换了提取方式（如 PDF 从 unstructured 换成 MinerU）之后，
+        # 旧片段与新片段不同源，逐文件比哈希会把两种产物混进同一份索引。
+        # 替身解析器没有这个属性时按空串处理，与"清单里没有指纹"等价。
+        parser_fingerprint = getattr(self.parser, "fingerprint", "")
+        if not isinstance(parser_fingerprint, str):
+            parser_fingerprint = ""
         if incremental:
             # 先确认缓存目录可用，避免解析完一堆文件才发现结果保存不了。
             self.chunk_store.assert_ready()
@@ -142,6 +148,16 @@ class IngestionPipeline:
                 if only is not None:
                     raise ValueError("--only requires a previous full build manifest")
                 logger.warning("No manifest found; performing a full build")
+                incremental = False
+            elif self.chunk_store.parser_fingerprint() != parser_fingerprint:
+                stored = self.chunk_store.parser_fingerprint()
+                if only is not None:
+                    raise ValueError("--only requires an index built by the current parser")
+                logger.warning(
+                    "Parser changed (%s -> %s); performing a full build",
+                    stored or "unversioned",
+                    parser_fingerprint,
+                )
                 incremental = False
 
         # 清单记录"上次成功写入索引时每个文件的哈希"，是判断文件是否变化的唯一基准。
@@ -253,7 +269,7 @@ class IngestionPipeline:
                 progress.start_phase("保存缓存")
             if save:
                 # publish 写入片段缓存与清单，并清除"更新中"标记。
-                self.chunk_store.publish(merged_chunks, new_manifest)
+                self.chunk_store.publish(merged_chunks, new_manifest, parser_fingerprint)
             else:
                 # 不保存时宁可丢弃缓存：本地缓存与向量库不一致比下次重建更危险。
                 self.chunk_store.discard_cache()

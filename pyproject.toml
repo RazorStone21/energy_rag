@@ -18,8 +18,12 @@ runtime = [
   "sentence-transformers>=3.3.0", "FlagEmbedding>=1.3.0",
   "langchain>=0.3.0", "langchain-core", "langchain-community>=0.3.0",
   "langchain-huggingface>=0.1.0", "langchain-experimental>=0.3.0",
-  "unstructured==0.16.25", "unstructured-inference==0.8.10", "unstructured.pytesseract>=0.3.12",
-  "pdfminer.six", "pikepdf", "pdf2image", "pi-heif", "pypdf", "pdfplumber", "pymupdf", "Pillow",
+  # PDF 版面解析由 MinerU 负责：正文、表格、图表位置与裁剪图都由它产出，
+  # 因此不再需要 unstructured / pdfplumber 这套抽取栈。
+  # 依赖预演确认它与上面的 transformers、torch 版本兼容（不覆盖任何现有包）。
+  "mineru[torch]>=4.0.3",
+  # cnki_crawler 仍用 pymupdf 读 PDF；Pillow 用于图表解码与解析。
+  "pymupdf", "Pillow",
   "markdown-it-py>=3,<5",
   "python-docx>=1.2,<2",
   "openpyxl>=3.1.5,<4",

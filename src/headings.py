@@ -21,6 +21,19 @@ HEADING_PATTERNS = (
 MAX_HEADING_CHARS = 40
 
 
+def push_heading(stack: list[str], text: str, level: int) -> None:
+    """把标题放到编号层级对应的位置上，并丢掉同级和更深层的旧标题。
+
+    栈比层级浅时先补空位，让标题落在自己的层级上。少了这一步，
+    文档开头就出现的「（一）」会落到第 0 层冒充顶层，后面同级的「（六）」
+    清不掉它，路径里就会串起两个互不相干的同级标题。
+    """
+    del stack[level - 1 :]
+    while len(stack) < level - 1:
+        stack.append("")
+    stack.append(text)
+
+
 def heading_level(text: str):
     """文本是章节标题时返回它的编号层级，否则返回 None。
 

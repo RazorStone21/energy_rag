@@ -15,7 +15,7 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 from src.config import load_settings
 
-MODEL_NAMES = ("bge-m3", "bge-reranker-v2-m3", "Qwen3-8B", "Qwen2.5-VL-3B")
+MODEL_NAMES = ("bge-m3", "bge-reranker-v2-m3", "Qwen3-14B-bnb-4bit", "Qwen3-VL-8B", "mineru")
 
 
 def model_catalog(settings):
@@ -28,6 +28,9 @@ def model_catalog(settings):
                 (settings.model_ids["reranker"], settings.reranker_path),
                 (settings.model_ids["generation"], settings.generation.path),
                 (settings.model_ids["vision"], settings.vision.path),
+                # MinerU 的模型由它自己的下载器按档位管理，不走快照下载这一套，
+                # 这里只为命令行列表补一个名字（实际路径见 [mineru].home）。
+                (settings.model_ids.get("mineru", "mineru"), settings.mineru.home),
             ],
         )
     )
@@ -75,8 +78,19 @@ def _already_downloaded(local_dir) -> bool:
     return bool(weights)
 
 
-def download(name: str, catalog):
-    """检查本地配置和权重是否存在，需要下载时按仓库 ID 保存到配置目录。"""
+def download(name: str, catalog, settings=None):
+    """检查本地配置和权重是否存在，需要下载时按仓库 ID 保存到配置目录。
+
+    mineru 走它自己的下载器：模型按档位组织在 [mineru].home 下，与 HuggingFace
+    快照下载不是同一套布局。
+    """
+    if name == "mineru":
+        from src.parsers.mineru_engine import MineruEngine
+
+        if settings is None:
+            raise ValueError("下载 MinerU 模型需要配置对象")
+        MineruEngine(settings.mineru).download_models(on_status=print)
+        return
     from huggingface_hub import snapshot_download
 
     repo_id, local_dir = catalog[name]
@@ -104,13 +118,14 @@ def main():
     parser.add_argument("--config", default=None)
     parser.add_argument("--data-root", default=None)
     args = parser.parse_args()
-    catalog = model_catalog(load_settings(args.config, args.data_root))
+    settings = load_settings(args.config, args.data_root)
+    catalog = model_catalog(settings)
     for n in args.models.split(","):
         n = n.strip()
         if n not in MODEL_NAMES:
             print(f"[warn] 未知模型 {n}，跳过（可选：{', '.join(MODEL_NAMES)}）")
             continue
-        download(n, catalog)
+        download(n, catalog, settings)
     print("全部完成。")
 
 

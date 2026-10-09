@@ -11,8 +11,8 @@ gov_doc/                       待入库的原始文档
 models/
 ├── bge-m3/                    嵌入模型权重
 ├── bge-reranker-v2-m3/         重排模型权重
-├── Qwen2.5-VL-3B/             视觉模型权重
-└── Qwen3-8B/                  文本生成模型权重
+├── Qwen3-VL-8B/               视觉模型权重（官方 bf16，加载时量化）
+└── Qwen3-14B-bnb-4bit/        文本生成模型权重（预量化 4bit）
 ```
 
 这些目录只有空的 `.gitkeep` 占位文件，不包含真实文档或模型。
@@ -30,7 +30,7 @@ models/
 | bm25.py | src/retrieval/bm25.py |
 | rag.py | src/pipeline.py、src/retrieval/hybrid.py、src/context_builder.py |
 | models.py | src/models/ 下的嵌入、重排和生成模块 |
-| multimodal.py | src/parsers/pdf_elements.py |
+| multimodal.py | src/parsers/mineru_pdf.py（版面解析由 MinerU 承担，旧 pdf_elements.py 已移除） |
 | download_models.py | scripts/download_models.py |
 | export_chunks.py | scripts/export_chunks.py |
 | fix_ragas_compat.py | scripts/fix_ragas_compat.py |

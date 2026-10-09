@@ -1,0 +1,58 @@
+# 知网能源/电力题录爬虫配置
+#
+# 合规边界（请先读 README）：本工具只抓取知网对未登录用户公开的题录页面，
+# 不破解验证码、不绕过权限、不批量下载全文。请保持默认的低频请求速率。
+
+[paths]
+# 数据目录（相对本配置文件所在目录）
+data_dir = "data"
+# SQLite 数据库
+db = "data/cnki.db"
+# JSONL 逐条落盘文件，进程被杀也不丢已抓数据
+jsonl = "data/articles.jsonl"
+# 浏览器导出的 cookie 文件（Netscape 格式），可选。
+# 存在则启用 PC 后端以获取完整摘要；缺失或失效时自动降级到 wap 后端。
+cookie_file = "data/cookies.txt"
+
+[network]
+# 请求间隔（秒）。这是礼貌爬取的核心参数，请不要低于 1.0。
+delay = 2.0
+timeout = 20
+# 单次请求的最大重试次数（仅对网络错误和 5xx 重试）
+max_retries = 3
+# 指数退避基数（秒）：第 n 次重试等待 backoff_base * 2**n
+backoff_base = 5.0
+# 移动端 UA。wap 站对移动端 UA 返回完整页面。
+user_agent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+[crawl]
+# 默认爬取最近多少年（避免一上来跑几天）
+years = 10
+# 触发反爬时的行为：true = 立即中止并报错；false = 仅记录警告后继续（不建议）
+abort_on_block = true
+# 单次运行最多抓取的期次数量，0 表示不限。用于冒烟测试。
+max_issues = 0
+
+# 种子期刊表：知网拼音刊名代码 (PYKM) = 刊名
+# 全部代码均在 2026-09-22 实测验证过，确认能解析到对应刊名。
+# 扩展方式见 discovery.py（代码探测），也可自行按同样格式添加。
+[journals]
+DLXT = "电力系统自动化"
+ZGDC = "中国电机工程学报"
+DWJS = "电网技术"
+GDYJ = "高电压技术"
+DGJS = "电工技术学报"
+DJKZ = "电机与控制学报"
+ZGDL = "中国电力"
+JDQW = "电力系统保护与控制"
+DLZD = "电力系统及其自动化学报"
+DQJS = "电气技术"
+DLJS = "电力建设"
+HDLG = "核动力工程"
+GDDL = "广东电力"
+ZJDL = "浙江电力"
+HNDL = "湖南电力"
+SCDL = "四川电力技术"
+XJDL = "新疆电力技术"
+NXDL = "宁夏电力"
+HBDL = "华北电力大学学报(自然科学版)"

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import torch
 from langchain_core.language_models.llms import LLM
 from pydantic import PrivateAttr
@@ -13,7 +16,7 @@ STREAM_THREAD_JOIN_TIMEOUT = 5
 
 
 class _QwenLLM(LLM):
-    """Qwen3-8B 4-bit 量化的 LangChain LLM 封装。
+    """Qwen 文本模型的 LangChain LLM 封装，具体型号由配置里的模型目录决定。
 
     根据 GenerationSettings.enable_thinking 控制聊天模板的思考模式。
     继承 LangChain LLM 后可通过 invoke 调用，也可接入 RAGAS 的模型包装器。
@@ -138,7 +141,7 @@ class _QwenLLM(LLM):
 
 
 class _QwenVL:
-    """Qwen2.5-VL 封装：提供 .describe(image, prompt) -> str 描述图表/图片。
+    """Qwen-VL 封装：提供 .describe(image, prompt) -> str 描述图表/图片。
 
     image 为解析器提供的 PIL.Image，用于文档入库时生成图片描述。
     模型实例由 Runtime 的 VisionGenerator 持有。
@@ -215,6 +218,39 @@ class _QwenVL:
         return [answer.strip() for answer in answers]
 
 
+def _bnb_4bit_config():
+    """加载时使用的 4bit 量化参数：NF4 压缩权重、BF16 用于计算，双重量化进一步减少存储开销。"""
+    from transformers import BitsAndBytesConfig
+
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+
+def _quantization_kwargs(directory):
+    """按模型目录拼出加载时要传的量化参数，目录自带量化配置时返回空字典。
+
+    预量化检查点（仓库里直接存了 4bit 权重，如 unsloth 的 bnb-4bit 仓库）的
+    config.json 里已经有 quantization_config，交给它自己生效即可。这里必须整个
+    省略这个参数而不能传 quantization_config=None：显式传 None 会被当成"本次不要
+    量化"，transformers 按未量化构建模型，随后与检查点里的打包 4bit 权重尺寸不符，
+    加载直接报错。
+    """
+    config_file = Path(directory) / "config.json"
+    try:
+        saved = json.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # 读不到 config.json 时不在这里下结论：按项目默认的加载时量化处理，
+        # 目录本身有问题会由 from_pretrained 报出，不会被静默忽略。
+        saved = {}
+    if saved.get("quantization_config"):
+        return {}
+    return {"quantization_config": _bnb_4bit_config()}
+
+
 def load_llm(settings):
     """从本地目录加载文本模型和分词器，返回兼容 LangChain 的生成对象。
 
@@ -224,25 +260,17 @@ def load_llm(settings):
     from transformers import (
         AutoModelForCausalLM,
         AutoTokenizer,
-        BitsAndBytesConfig,
     )
 
-    # NF4 压缩权重、BF16 用于计算；双重量化进一步减少存储开销。
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
     tokenizer = AutoTokenizer.from_pretrained(
         str(settings.path),
         trust_remote_code=True,
     )
     model = AutoModelForCausalLM.from_pretrained(
         str(settings.path),
-        quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
+        **_quantization_kwargs(settings.path),
     )
     return _QwenLLM(model, tokenizer, settings)
 
@@ -254,31 +282,21 @@ def load_vlm(settings):
     模型负责结合图片与文字生成描述，处理器负责准备输入及解码输出。
     """
     from transformers import (
+        AutoModelForImageTextToText,
         AutoProcessor,
-        BitsAndBytesConfig,
     )
 
-    # 优先使用专用视觉模型类；回退入口仍需底层版本支持该模型。
-    try:
-        from transformers import Qwen2_5_VLForConditionalGeneration as VLMForCausalLM
-    except ImportError:  # pragma: no cover
-        from transformers import AutoModelForCausalLM as VLMForCausalLM
-
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
     # 视觉处理器同时准备图片和文本输入，需与模型权重配套。
     processor = AutoProcessor.from_pretrained(
         str(settings.path),
         trust_remote_code=True,
     )
-    model = VLMForCausalLM.from_pretrained(
+    # 按目录里 config.json 的 model_type 选具体类（Qwen3-VL、Qwen2.5-VL 都能加载），
+    # 换视觉模型时不必再改这里的类名。
+    model = AutoModelForImageTextToText.from_pretrained(
         str(settings.path),
-        quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
+        **_quantization_kwargs(settings.path),
     )
     return _QwenVL(model, processor, settings)

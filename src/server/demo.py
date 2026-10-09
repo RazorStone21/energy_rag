@@ -69,7 +69,7 @@ DEMO_ANSWER = (
 )
 
 DEMO_BUILD = {
-    "processed": ["01-china-accelerating-new-power-system-construction-action-plan-2024-cn.pdf"],
+    "processed": ["0001.china-accelerating-new-power-system-construction-action-plan-2024-cn.pdf"],
     "removed": [],
     "failed": {},
 }

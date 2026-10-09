@@ -230,6 +230,9 @@ class RagService:
                     result = self.runtime.ingestion.build(incremental=incremental)
                 finally:
                     self._building = False
+                    # MinerU 的模型会一直占着显存，构建结束必须还回去，
+                    # 否则下一次提问加载生成模型时可能越界。
+                    self.runtime.release_mineru()
                     self._lock.release()
                 self._last_build = {
                     "incremental": incremental,

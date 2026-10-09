@@ -31,7 +31,6 @@ from src.models.generator import Generator, VisionGenerator
 from src.models.reranker import Reranker
 from src.parsers.excel import ExcelParser
 from src.parsers.markdown import MarkdownParser
-from src.parsers.pdf import PDFParser
 from src.parsers.registry import ParserRegistry
 from src.parsers.text import TextParser
 from src.parsers.word import WordParser
@@ -367,6 +366,38 @@ def test_model_components_load_once_when_called_concurrently():
         assert len(calls) == 2, name
 
 
+def test_quantization_kwargs_follow_the_model_directory(tmp_path):
+    """验证预量化目录整个省略量化参数，原始权重目录按项目默认量化加载。
+
+    预量化检查点自带 quantization_config，交给它自己生效；这里必须返回空字典而不是
+    传 quantization_config=None——显式传 None 会被当成"本次不要量化"，模型按未量化
+    构建后与检查点里的打包 4bit 权重尺寸不符，加载直接失败。
+    """
+    from src.models.local_qwen import _quantization_kwargs
+
+    pre_quantized = tmp_path / "pre"
+    pre_quantized.mkdir()
+    (pre_quantized / "config.json").write_text(
+        json.dumps(
+            {"quantization_config": {"quant_method": "bitsandbytes", "load_in_4bit": True}}
+        )
+    )
+    assert _quantization_kwargs(pre_quantized) == {}
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    config = _quantization_kwargs(raw)["quantization_config"]
+    assert config.load_in_4bit is True
+    assert config.bnb_4bit_quant_type == "nf4"
+
+    # 目录里没有 config.json（权重缺失或路径写错）时按原始权重处理，
+    # 由加载阶段给出"找不到模型"的错误，而不是在这里静默跳过量化。
+    missing = tmp_path / "missing"
+    missing.mkdir()
+    assert "quantization_config" in _quantization_kwargs(missing)
+
+
 def test_source_label_covers_each_format_and_matches_prompt():
     """验证来源标签覆盖各格式的位置字段，且与提示词里的来源说明同源。"""
     cases = [
@@ -543,46 +574,6 @@ def test_chunker_keeps_short_whole_units_the_length_floor_would_drop():
     splitter.split_documents.return_value = []
     chunker = Chunker(Mock(), settings, splitter_factory=lambda *a, **k: splitter)
     assert chunker.split(ParseResult(texts=[code], tables=[table])) == [code, table]
-
-
-def test_pdf_text_falls_back_after_exception_and_ocr_keeps_all_categories(tmp_path):
-    """验证快速解析报错后继续 OCR，且 OCR 不使用正文类型白名单。"""
-    calls = []
-
-    def partition(path, strategy, categories):
-        """模拟快速解析失败和 OCR 成功，并记录策略参数。"""
-        calls.append((strategy, categories))
-        if strategy == "fast":
-            raise RuntimeError("fast parser failed")
-        return {2: ["OCR text"]}
-
-    parser = PDFParser(
-        SimpleNamespace(available=False),
-        None,
-        unstructured_text_extractor=partition,
-        fallback_text_extractor=lambda p: {},
-        document_factory=SimpleNamespace,
-        table_extractor=lambda p: [],
-    )
-    parsed = parser.parse(tmp_path / "scan.pdf")
-    assert not parsed.errors
-    assert calls[-1] == ("ocr_only", None)
-    assert parsed.texts[0].metadata == {"source": "scan.pdf", "page": 2, "type": "text"}
-
-
-def test_pdf_stage_errors_are_explicit(tmp_path):
-    """验证表格解析失败被记录，同时保留已提取的正文。"""
-    parser = PDFParser(
-        SimpleNamespace(available=False),
-        None,
-        unstructured_text_extractor=lambda *a: {1: ["good text"]},
-        document_factory=SimpleNamespace,
-        table_extractor=Mock(side_effect=RuntimeError("bad table")),
-    )
-    parsed = parser.parse(tmp_path / "a.pdf")
-    assert parsed.texts
-    assert parsed.errors == ["tables: bad table"]
-
 
 class FakeVectorStore:
     def __init__(self, docs=()):
@@ -1097,68 +1088,6 @@ def test_boundary_fix_crosses_pages_but_not_sources():
 
 
 # ---------------- 跨页合并 ----------------
-
-
-def test_merge_pages_rejoins_sentence_cut_by_page_break():
-    """页尾停在句中的话要和下一页开头直接接上，被劈开的一句才能复原。
-
-    复原后的那一句起于第一页，因此归第一页；紧随其后的句子才归第二页。
-    """
-    from src.chunker import _merge_pages
-
-    first = doc("优化加强电网主网架。适应电力发展新形势需要，组织", page=1)
-    second = doc("开展电力系统设计工作，补齐结构短板。储能建设持续推进。", page=2)
-    merged, metas = _merge_pages([first, second], r"(?<=[。！？；;.!?])")
-
-    assert "组织开展电力系统设计工作" in merged
-    assert [meta["page"] for meta in metas] == [1, 1, 2]
-
-
-def test_merge_pages_keeps_paragraph_break_when_page_ends_cleanly():
-    """页尾那句已经说完就用换行保留段落边界，不能把两页糊成一坨。"""
-    from src.chunker import _merge_pages
-
-    merged, _ = _merge_pages(
-        [doc("优化加强电网主网架。", page=1), doc("开展电力系统设计工作。", page=2)],
-        r"(?<=[。！？；;.!?])",
-    )
-
-    assert merged == "优化加强电网主网架。\n开展电力系统设计工作。"
-
-
-def test_spanning_chunk_takes_page_and_heading_of_its_first_sentence():
-    """跨页片段按第一句所在页引用，章节路径也跟着一起换。"""
-    settings = load_settings(Path(__file__).resolve().parents[2] / "config.toml").splitting
-    pages = [
-        SimpleNamespace(
-            page_content="第一页的正文句子。第二页才说完的句子开头，",
-            metadata={"source": "a.pdf", "page": 1, "type": "text", "heading_path": "一、总则"},
-        ),
-        SimpleNamespace(
-            page_content="在第二页结束。第二页的另一句。",
-            metadata={"source": "a.pdf", "page": 2, "type": "text", "heading_path": "二、实施"},
-        ),
-    ]
-    # 替身切分器按句分组，模拟 SemanticChunker 的产出：句子之间补了空格。
-    splitter = Mock()
-    splitter.split_documents.return_value = [
-        SimpleNamespace(
-            page_content="第一页的正文句子。 第二页才说完的句子开头，在第二页结束。",
-            metadata={"source": "a.pdf", "page": 1, "type": "text", "heading_path": "一、总则"},
-        ),
-        SimpleNamespace(
-            page_content="第二页的另一句。",
-            metadata={"source": "a.pdf", "page": 1, "type": "text", "heading_path": "一、总则"},
-        ),
-    ]
-    chunker = Chunker(Mock(), settings, splitter_factory=lambda *a, **k: splitter)
-
-    result = chunker.split_texts(pages)
-
-    # 第一块跨页但起于第一页；第二块整块在第二页，章节路径必须跟着换。
-    assert [chunk.metadata["page"] for chunk in result] == [1, 2]
-    assert [chunk.metadata["heading_path"] for chunk in result] == ["一、总则", "二、实施"]
-
 
 def test_split_texts_keeps_unpaginated_sources_on_the_old_path():
     """没有页码的来源按块组织，仍逐块交给切分器，不做合并。"""

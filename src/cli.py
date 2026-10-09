@@ -103,12 +103,17 @@ def _run_build(runtime: Runtime, args: argparse.Namespace) -> int:
             "全量构建只处理前 %d 个文件：索引中的其余来源会被删除。",
             args.max_files,
         )
-    result = runtime.ingestion.build(
-        max_files=args.max_files,
-        incremental=args.incremental,
-        only=args.only,
-        progress_factory=BuildProgress,
-    )
+    try:
+        result = runtime.ingestion.build(
+            max_files=args.max_files,
+            incremental=args.incremental,
+            only=args.only,
+            progress_factory=BuildProgress,
+        )
+    finally:
+        # MinerU 的版面模型占着显存；命令行构建结束后立刻归还，
+        # 让后续在同一进程里运行的问答不受影响。
+        runtime.release_mineru()
     print(f"成功 {len(result.processed)}，移除 {len(result.removed)}，失败 {len(result.failed)}")
     if result.failed:
         logging.error("失败文件保留旧索引，下次重试：%s", result.failed)

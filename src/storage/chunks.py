@@ -8,6 +8,9 @@ import pickle
 import tempfile
 from pathlib import Path
 
+# 清单里除“文件名 → 哈希”外的保留键，记录产出这份索引的解析链路指纹。
+MANIFEST_PARSER_KEY = "__parser__"
+
 
 def atomic_write(path, data):
     """先把数据写到同目录的临时文件，写完后再替换目标文件，避免直接覆盖到一半。"""
@@ -71,7 +74,11 @@ class ChunkStore:
         return chunks
 
     def load_manifest(self):
-        """读取并检查“文件名 → 文件哈希”清单，文件不存在时返回空字典。"""
+        """读取并检查“文件名 → 文件哈希”清单，文件不存在时返回空字典。
+
+        清单里还有一条保留项记录解析链路指纹（见 parser_fingerprint），它不是文件，
+        因此不在这里返回，否则会被当成"磁盘上已删除的来源"。
+        """
         self.assert_ready()
         if not self.manifest_path.exists():
             return {}
@@ -80,18 +87,41 @@ class ChunkStore:
             not isinstance(k, str) or not isinstance(v, str) for k, v in result.items()
         ):
             raise ValueError("Invalid build manifest")
-        return result
+        return {name: digest for name, digest in result.items() if name != MANIFEST_PARSER_KEY}
+
+    def parser_fingerprint(self) -> str:
+        """读取上次构建使用的解析链路指纹；没有清单或旧清单没有该字段时返回空串。
+
+        空串表示"这套索引来路不明"，与当前指纹比对必然不等，从而触发一次全量重建。
+        """
+        self.assert_ready()
+        if not self.manifest_path.exists():
+            return ""
+        try:
+            result = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return ""
+        if not isinstance(result, dict):
+            return ""
+        value = result.get(MANIFEST_PARSER_KEY)
+        return value if isinstance(value, str) else ""
 
     def begin_write(self):
         """创建 .pending 文件，表示本次索引更新尚未完成。"""
         # 标记只用于发现未完成的写入，不能阻止多个进程同时写入，也不能撤销数据库修改。
         atomic_write(self.pending_path, b"index update in progress\n")
 
-    def publish(self, chunks, manifest):
-        """把片段和文件哈希清单保存到磁盘，两个文件都写完后再删除 .pending 标记。"""
+    def publish(self, chunks, manifest, parser_fingerprint=""):
+        """把片段和文件哈希清单保存到磁盘，两个文件都写完后再删除 .pending 标记。
+
+        parser_fingerprint 一并写进清单：下次增量构建据此判断索引是否由同一套
+        解析链路产出，不是的话必须全量重建。
+        """
         chunk_bytes = pickle.dumps(list(chunks))
+        stored = dict(manifest)
+        stored[MANIFEST_PARSER_KEY] = parser_fingerprint
         manifest_text = json.dumps(
-            manifest,
+            stored,
             ensure_ascii=False,
             indent=2,
             sort_keys=True,

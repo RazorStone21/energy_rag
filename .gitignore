@@ -4,7 +4,8 @@
 data/chunks.pkl
 data/build_manifest.json
 data/build_manifest.pending
-data/milvus.db/
+# 不带斜杠：Milvus Lite 新旧布局分别是文件与目录，两种都不进库。
+data/milvus.db
 
 # chunks.pkl 的可读导出，由 python -m scripts.export_chunks 生成；
 # 体积随语料增长且随时可重建，只作人工查看用，不进版本库。
@@ -18,6 +19,10 @@ data/memory/
 # models/ 必须带前导斜杠：不带时该模式会匹配任意层级的同名目录，把 src/models/ 源码一并忽略。
 data/gov_doc/
 /models/
+
+# MinerU 的版面/OCR/表格模型，由 python -m scripts.download_models --models mineru 下载，
+# 体积约 1.6G，不进版本库。
+data/mineru_home/
 
 # 分块对比评测的大体积产物：每个策略一份临时向量库和全量分块导出，重跑评测即可重建。
 # chunk_compare（切分策略）与 overlap_compare（重叠长度）结构同构，共用同一套规则。
@@ -35,6 +40,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.ipynb_checkpoints/
 build/
 dist/
 *.egg-info/
+
+# cnki_crawler 运行时数据（抓取的题录库与原始页面）
+cnki_crawler/data/
+energy_docs/data/
+patent_corpus/data/

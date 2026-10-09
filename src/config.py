@@ -65,14 +65,15 @@ class JudgeSettings:
 
 @dataclass(frozen=True)
 class VisionSettings:
-    """图片描述的模型和提示词，以及提取图片时使用的尺寸、清晰度限制。"""
+    """图片描述的模型与提示词，以及一次送进模型的图片张数。
+
+    图片本身由 MinerU 在版面解析时裁好（见 MineruSettings），这里不再有渲染用的
+    尺寸与 dpi 参数：那些值原本只服务于"自己按 bbox 渲染图片区域"的旧实现。
+    """
 
     path: Path
     max_new_tokens: int
     prompt: str
-    min_width: int
-    min_height: int
-    dpi: int
     # 一次送给视觉模型的图片数量。实测 12 张时单张耗时从 5.3 秒降到 1.0 秒，
     # 显存只涨一档；再往上收益递减，而整套图里最慢的一张会拖住整批。
     batch_size: int = 12
@@ -80,6 +81,48 @@ class VisionSettings:
     def __post_init__(self):
         """检查批量大小；批次为 1 时等价于逐张描述。"""
         positive_int(self.batch_size, "vision.batch_size")
+
+
+@dataclass(frozen=True)
+class MineruSettings:
+    """MinerU 版面解析的开关、档位、模型位置，以及表格切片与图表过滤参数。
+
+    tier 用 basic 而不是 standard：实测同一份 PDF 两档输出的版面块完全相同
+    （同样的 table/chart/image 块与裁剪图），差别只是 standard 会再跑一遍它自带的
+    VLM——而那个 VLM 在本机只能跑 CPU（wheel 无 CUDA 后端），实测慢 23 倍。
+    图表描述由项目自己的视觉模型负责，口径与既有评测一致。
+    """
+
+    enabled: bool = True
+    tier: str = "basic"
+    home: Path = Path("data/mineru_home")
+    model_source: str = "modelscope"
+    # 表格按行切片的大小，与 [excel] 的 rows_per_chunk 同义；表头会在每片重复。
+    rows_per_chunk: int = 50
+    # 少于这些行/列的"表格"是被误判的正文，直接丢弃（与旧实现的判据一致）。
+    min_table_rows: int = 2
+    min_table_columns: int = 2
+    # 图表块占页面的宽/高比例下限，低于此值的多为装饰性小图标。
+    min_figure_width_ratio: float = 0.15
+    min_figure_height_ratio: float = 0.05
+    # 连续多少份文件解析失败就判定环境坏了，中止本次构建而不是逐份失败。
+    max_consecutive_failures: int = 3
+
+    def __post_init__(self):
+        """校验档位、模型来源与切片参数，避免跑到一半才发现配置写错。"""
+        if not isinstance(self.enabled, bool):
+            raise ValueError("mineru.enabled 必须是布尔值")
+        if self.tier not in ("flash", "basic", "standard", "advanced"):
+            raise ValueError(f"mineru.tier 必须是内置档位之一：{self.tier}")
+        if self.model_source not in ("auto", "huggingface", "modelscope", "local"):
+            raise ValueError(f"mineru.model_source 取值不合法：{self.model_source}")
+        for name in ("rows_per_chunk", "min_table_rows", "min_table_columns"):
+            positive_int(getattr(self, name), f"mineru.{name}")
+        for name in ("min_figure_width_ratio", "min_figure_height_ratio"):
+            value = getattr(self, name)
+            if not 0 < value < 1:
+                raise ValueError(f"mineru.{name} 必须落在 (0, 1) 之间")
+        positive_int(self.max_consecutive_failures, "mineru.max_consecutive_failures")
 
 
 @dataclass(frozen=True)
@@ -224,6 +267,7 @@ class Settings:
     model_ids: dict[str, str]
     rewrite_prompt: str = ""
     excel: ExcelSettings = field(default_factory=ExcelSettings)
+    mineru: MineruSettings = field(default_factory=MineruSettings)
     conversation: ConversationSettings = field(default_factory=ConversationSettings)
     memory: MemorySettings = field(default_factory=MemorySettings)
     rewrite: RewriteSettings = field(default_factory=RewriteSettings)
@@ -269,9 +313,6 @@ def _validate_config(raw: dict) -> None:
     for name, value in (
         ("max_new_tokens", generation["max_new_tokens"]),
         ("vision.max_new_tokens", vision["max_new_tokens"]),
-        ("vision.min_width", vision["min_width"]),
-        ("vision.min_height", vision["min_height"]),
-        ("vision.dpi", vision["dpi"]),
         ("splitting.min_chars", splitting["min_chars"]),
         ("reranker.max_length", raw["reranker"].get("max_length", DEFAULT_RERANK_MAX_LENGTH)),
     ):
@@ -340,6 +381,9 @@ def load_settings(
     vision = raw["vision"]
     splitting = raw["splitting"]
     milvus = raw["milvus"]
+    mineru_raw = dict(raw.get("mineru", {}))
+    # MinerU 的模型目录与文档、索引同源：默认落在数据根目录下，可由 [mineru].home 覆盖。
+    mineru_raw["home"] = resolve(mineru_raw.get("home", "data/mineru_home"))
     connection = dict(milvus["connection"])
     uri = connection["uri"]
     # HTTP 服务地址直接使用；Milvus Lite 文件地址和其他数据路径使用同一根目录。
@@ -375,9 +419,6 @@ def load_settings(
             path=resolve(vision["path"]),
             max_new_tokens=vision["max_new_tokens"],
             prompt=raw["prompts"]["figure"],
-            min_width=vision["min_width"],
-            min_height=vision["min_height"],
-            dpi=vision["dpi"],
             batch_size=vision.get("batch_size", VisionSettings.batch_size),
         ),
         splitting=SplitSettings(**splitting),
@@ -390,6 +431,7 @@ def load_settings(
         ),
         prompt_template=raw["prompts"]["rag"],
         excel=ExcelSettings(**raw.get("excel", {})),
+        mineru=MineruSettings(**mineru_raw),
         # 旧配置没有 [conversation] 段时使用默认的历史长度上限。
         conversation=ConversationSettings(**raw.get("conversation", {})),
         memory=memory,

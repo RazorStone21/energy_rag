@@ -4,7 +4,7 @@
 
 系统提供三种使用方式：命令行、Web 界面与 Python 编程接口。
 
-**技术栈**：BGE-M3（嵌入）/ bge-reranker-v2-m3（重排）/ Qwen3-8B（生成）/ Qwen2.5-VL-3B（图表理解）/ Milvus（向量库）/ jieba + BM25（关键词检索）
+**技术栈**：BGE-M3（嵌入）/ bge-reranker-v2-m3（重排）/ Qwen3-14B（生成）/ Qwen3-VL-8B（图表理解）/ Milvus（向量库）/ jieba + BM25（关键词检索）
 
 ## 目录
 
@@ -31,7 +31,7 @@
 | 混合检索 | 向量召回与 BM25 关键词召回各自独立执行，再以 RRF 融合；单路不可用时自动降级 |
 | 语义重排 | bge-reranker-v2-m3 对融合结果精排，默认保留前 5 条进入提示词 |
 | 多格式解析 | PDF、TXT、Markdown、DOCX、XLSX，保留页码、标题路径、表格行列等位置元数据 |
-| 扫描件与图表 | PDF 按 fast → pypdf → OCR 顺序回退提取正文；图表由视觉模型转为文字描述后入库 |
+| 扫描件与图表 | PDF 版面由 MinerU 解析（正文、表格结构、图表位置与裁剪图）；图表再由本地视觉模型转为文字描述入库 |
 | 多轮问答 | 会话记录落盘于服务端，最近若干轮注入提示词；追问按需改写为独立问句后再检索 |
 | 长期记忆 | `memory.md` 每轮注入提示词，可手工维护，也可在 Web 界面查看与编辑 |
 | 增量入库 | 按文件内容哈希识别变更，只重处理新增与修改的文件 |
@@ -61,7 +61,8 @@
 - **Python** 3.11 或更新版本。
 - **GPU**：模型默认加载到 `cuda`（见 `config.toml` 的 `embedding.device`）。
 - **模型权重**：默认从项目内 `models/` 的四个子目录加载，可参考 `config.toml` 中的 `model_id` 设定。
-- **OCR（可选）**：仅扫描件 PDF 需要，需安装系统程序及中文语言包。
+- **PDF 版面模型**：MinerU 的版面/OCR/表格模型（约 1G）由 `python -m scripts.download_models --models mineru`
+  下载到 `config.toml` 的 `[mineru].home`；扫描件 OCR 由这套模型内置完成，不需要系统级 OCR 程序。
 
 ## 安装
 
@@ -85,17 +86,15 @@ python -m pip install ".[dev]"                      # 仅流程层与无模型�
 
 AutoDL 等已预装模型依赖的环境，直接在项目根目录运行 `main.py` 即可，不需要安装本项目，也不需要设置包名映射。
 
-扫描件 OCR 另需安装系统程序：
-
-```bash
-apt-get install -y tesseract-ocr tesseract-ocr-chi-sim poppler-utils
-```
+PDF 的版面解析由 MinerU 完成（正文、表格结构、图表位置与裁剪图），它的模型按档位放在
+`data/mineru_home` 下，首次使用会自动下载，也可提前执行 `python -m scripts.download_models --models mineru`。
+扫描件 OCR 由这套模型内置处理，不再需要系统级 OCR 程序。
 
 模型下载与旧版 RAGAS 兼容修复由 `scripts/` 下的工具完成：
 
 ```bash
 python -m scripts.download_models                      # 下载全部四个模型
-python -m scripts.download_models --models Qwen2.5-VL-3B
+python -m scripts.download_models --models Qwen3-VL-8B
 python -m scripts.fix_ragas_compat                     # 旧依赖组合的兼容修复
 ```
 
@@ -260,10 +259,12 @@ python main.py --config /path/to/config.toml --data-root /path/to/data build --i
 支持 `.pdf`、`.txt`、`.md`、`.docx`、`.xlsx`，后缀不区分大小写；**只读取 `paths.documents` 目录的第一层**，不递归子目录。
 `~$` 前缀的 Office 锁定文件自动跳过。
 
-> **升级提示**：已有 AutoDL 环境需补充文档解析依赖，并为携带新元数据的格式重建一次旧集合：
+> **升级提示**：PDF 解析已从 unstructured 换成 MinerU。已有环境需要安装新依赖并重建索引；
+> 索引指纹与 build 清单不一致时会自动转为全量构建，不需要手工删缓存：
 >
 > ```bash
-> python -m pip install "markdown-it-py>=3,<5" "python-docx>=1.2,<2" "openpyxl>=3.1.5,<4"
+> python -m pip install "mineru[torch]>=4.0.3"
+> python -m scripts.download_models --models mineru
 > python main.py build
 > ```
 >

@@ -92,6 +92,7 @@ def fake_runtime(pipeline=None, chunk_store=None, ingestion=None, memory_store=N
         ingestion=ingestion or Mock(),
         memory_store=memory_store or DemoMemoryStore(seed=False),
         release_models=Mock(),
+        release_mineru=Mock(),
     )
 
 

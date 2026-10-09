@@ -1,0 +1,155 @@
+# 中文能源电力公开文档采集配置
+#
+# 合规边界（先读 README）：只采集公开发布的政府/行业文档页面，
+# 保持低频礼貌请求，不绕过任何访问控制。
+
+[paths]
+data_dir = "data"
+db = "data/energy_docs.db"
+jsonl = "data/documents.jsonl"
+
+[network]
+# 请求间隔（秒）。政府站承载能力有限，请勿低于 1.5。
+delay = 2.0
+timeout = 25
+max_retries = 3
+backoff_base = 5.0
+
+[crawl]
+# 被拦截时立即中止整轮采集
+abort_on_block = true
+# 单站最多翻多少页（防止分页策略失效时无限翻）
+max_pages = 40
+
+# ============================================================================
+# 站点清单
+#
+# 新增一个站通常只需加一段 [[sites]]，不用写代码。三个关键字段：
+#   base          站点根地址
+#   entry         列表页入口路径
+#   link_pattern  内容页 URL 的正则（对绝对化后的 URL 匹配）
+#
+# 不确定 link_pattern 怎么写时，先用 `python -m energy_docs probe <url>`
+# 看该页所有链接的实际形态。
+# ============================================================================
+
+# ---- 国家能源局 ----
+
+[[sites]]
+name = "国家能源局-能源法律法规"
+base = "https://www.nea.gov.cn"
+entry = "/nyflfg/index.htm"
+# 形如 /2024-11/09/c_1310787187.htm
+link_pattern = 'nea\.gov\.cn/\d{4}-\d{2}/\d{2}/c_\d+\.htm'
+category = "法律法规"
+
+# ---- 省级能源主管机构（实测链接形态已验证） ----
+
+# 注：入口指向「通知公告」而不是「动态要闻」。动态要闻产出的是 600 字左右的
+# 短新闻，训练价值低；通知公告里的政策文件篇幅和质量都高得多。
+[[sites]]
+name = "山东省能源局-通知公告"
+base = "http://nyj.shandong.gov.cn"
+entry = "/col/col59960/index.html"
+# 形如 /art/2026/9/20/art_59966_10313615.html
+link_pattern = '/art/\d{4}/\d{1,2}/\d{1,2}/art_\d+_\d+\.html'
+category = "省级能源局"
+
+[[sites]]
+name = "山东省能源局-法定主动公开内容"
+base = "http://nyj.shandong.gov.cn"
+entry = "/col/col100229/index.html"
+link_pattern = '/art/\d{4}/\d{1,2}/\d{1,2}/art_\d+_\d+\.html'
+category = "省级能源局"
+
+[[sites]]
+name = "山西省能源局"
+base = "http://nyj.shanxi.gov.cn"
+entry = "/xwzx/sjxw/index.shtml"
+# 形如 /xwzx/sjxw/5/t5_3.shtml
+link_pattern = '/t\d+_\d+\.shtml'
+category = "省级能源局"
+
+[[sites]]
+name = "浙江省发展和改革委员会"
+base = "https://fzggw.zj.gov.cn"
+entry = "/"
+# 形如 /col/col1629218/art/2026/art_05bda1af829843b082c860cd5c58a8d6.html
+link_pattern = '/col/col\d+/art/\d{4}/art_[0-9a-f]+\.html'
+category = "省级能源局"
+
+# ---- 更多省级机构（2026-09-22 实测链接形态已验证） ----
+
+[[sites]]
+name = "贵州省发展改革委-通知公告"
+base = "https://fgw.guizhou.gov.cn"
+entry = "/fggz/tzgg/"
+link_pattern = '/fggz/tzgg/\d{6}/t\d{8}_\d+\.html'
+category = "省级发改委"
+
+[[sites]]
+name = "重庆市发展改革委-通知公告"
+base = "https://fzggw.cq.gov.cn"
+entry = "/zwxx/tzgg/"
+link_pattern = '/zwxx/tzgg/\d{6}/t\d{8}_\d+\.html'
+category = "省级发改委"
+
+[[sites]]
+name = "重庆市发展改革委-政策文件"
+base = "https://fzggw.cq.gov.cn"
+entry = "/zwgk/zfxxgkml/zcwj/"
+link_pattern = '/zcwj/.+t\d{8}_\d+\.html'
+category = "省级发改委"
+
+[[sites]]
+name = "北京市发展改革委-通知通告"
+base = "https://fgw.beijing.gov.cn"
+entry = "/gzdt/tztg/"
+link_pattern = '/fgwzwgk/.+t\d{8}_\d+\.htm'
+category = "省级发改委"
+
+[[sites]]
+name = "北京市发展改革委-政策文件"
+base = "https://fgw.beijing.gov.cn"
+entry = "/fgwzwgk/2024zcwj/"
+link_pattern = '/fgwzwgk/.+t\d{8}_\d+\.htm'
+category = "省级发改委"
+
+[[sites]]
+name = "广西发展改革委-主动公开文件"
+base = "http://fgw.gxzf.gov.cn"
+entry = "/zfxxgkzl/wjzx/"
+link_pattern = '/zfxxgkzl/wjzx/.+t\d+\.shtml'
+category = "省级发改委"
+
+[[sites]]
+name = "陕西省发展改革委-发改要闻"
+base = "https://sndrc.shaanxi.gov.cn"
+entry = "/sy/xwxx/fgyw/"
+link_pattern = '/sy/xwxx/fgyw/\d{6}/t\d{8}_\d+\.html'
+category = "省级发改委"
+
+[[sites]]
+name = "安徽省发展改革委-发改要闻"
+base = "https://fzggw.ah.gov.cn"
+entry = "/ywdt/fgyw/index.html"
+link_pattern = '/ywdt/fgyw/\d+\.html'
+category = "省级发改委"
+
+# ---- 附件直发站（列表页每条就是一个附件直链，命中率接近 100%） ----
+
+[[sites]]
+name = "辽宁省发展改革委-通知公告"
+base = "https://fgw.ln.gov.cn"
+entry = "/fgw/index/tzgg/index.shtml"
+# 列表页通过 pdfjs 预览器挂 PDF，真实地址在 viewer.html?file= 参数里
+link_pattern = '/articleFileDir/.+\.pdf'
+category = "省级发改委"
+
+[[sites]]
+name = "天津市发展改革委-通知公告"
+base = "https://fzgg.tj.gov.cn"
+entry = "/xxfb/tzggx/"
+# 列表页直接挂 docx 附件
+link_pattern = '/tzggx/\d+/W\d+\.docx'
+category = "省级发改委"

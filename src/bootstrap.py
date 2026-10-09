@@ -14,6 +14,7 @@ from .models.reranker import Reranker
 from .models.rewriter import QueryRewriter
 from .parsers.excel import ExcelParser
 from .parsers.markdown import MarkdownParser
+from .parsers.mineru_engine import MineruEngine
 from .parsers.pdf import PDFParser
 from .parsers.registry import ParserRegistry
 from .parsers.text import TextParser
@@ -51,10 +52,13 @@ class Runtime:
             settings.memory,
         )
         self.chunker = Chunker(self.embedder, settings.splitting)
+        # PDF 的版面解析交给 MinerU；它自己管模型生命周期，因此单独持有一个引擎，
+        # 由 release_mineru 在入库结束后归还显存。
+        self.mineru = MineruEngine(settings.mineru)
         # 只注册已经实现的格式；文件发现与解析共用这里的后缀列表。
         self.parser = ParserRegistry(
             {
-                ".pdf": PDFParser(self.vision, settings.vision),
+                ".pdf": PDFParser(self.vision, settings.vision, self.mineru, settings.mineru),
                 ".txt": TextParser(),
                 ".md": MarkdownParser(),
                 ".docx": WordParser(),
@@ -99,6 +103,14 @@ class Runtime:
             component.release()
         # Milvus 对象也保存着嵌入模型，因此这里一并清除，让模型有机会释放。
         self.vector_store.release()
+
+    def release_mineru(self):
+        """归还 MinerU 占用的显存；下次入库的第一份文件会重新加载它的模型。
+
+        入库期间 MinerU 与视觉模型同时驻留，入库结束后如果一直留着，之后第一次
+        提问再加载 14B 就可能越界，因此构建收尾必须调用这里。
+        """
+        self.mineru.release()
 
     def release_reranker(self):
         """清除重排模型引用并尝试回收内存，减少随后生成评测的显存占用。"""

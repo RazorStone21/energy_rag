@@ -236,16 +236,29 @@ def test_retrieval_evaluation_explicitly_disables_hybrid():
 
 
 def test_generation_evaluation_uses_pipeline_evidence():
-    """验证生成评测采用问答流程实际返回的答案和证据，并保留题型。"""
+    """验证生成评测采用问答流程实际返回的答案和证据，并保留题型与片段位置。"""
     module = load_script("tests/evaluation/run_rag_eval.py")
     runtime = Mock()
-    document = SimpleNamespace(page_content="证据", metadata={})
+    document = SimpleNamespace(
+        page_content="证据",
+        metadata={"source": "报告.pdf", "page": 3, "type": "text", "block_index": 5},
+    )
     runtime.pipeline.ask.return_value = AnswerResult("回答", [SearchHit(document)])
     assert module.collect_predictions([{"question": "问题", "type": "table"}], runtime) == [
         {
             "question": "问题",
             "type": "table",
             "contexts": ["证据"],
+            # 片段位置随上下文一起落盘：指标掉下来时能定位到是哪条片段变了。
+            "context_keys": [
+                {
+                    "source": "报告.pdf",
+                    "page": 3,
+                    "type": "text",
+                    "block_index": 5,
+                    "table_index": None,
+                }
+            ],
             "answer": "回答",
             "reference": "",
         }
