@@ -25,6 +25,7 @@ from .retrieval.hybrid import HybridRetriever
 from .storage.chunks import ChunkStore
 from .storage.memory import MemoryStore
 from .storage.milvus import MilvusStore
+from .storage.parse_cache import ParseCache
 
 
 class Runtime:
@@ -42,6 +43,8 @@ class Runtime:
             self.generator,
         )
         self.chunk_store = ChunkStore(settings.chunks_path, settings.manifest_path)
+        # 按文件片段缓存放在 chunks 缓存同目录下；全量构建失败后可据此续跑。
+        self.parse_cache = ParseCache(settings.chunks_path.parent / "parse_cache")
         # 记忆存储挂在 Runtime 上，这样演示模式和测试可以像换 pipeline 一样换掉它。
         self.memory_store = MemoryStore(settings.memory_dir, settings.memory.enabled)
         self.vector_store = MilvusStore(self.embedder, settings.milvus)
@@ -95,6 +98,7 @@ class Runtime:
             self.chunk_store,
             self.settings.doc_dir,
             supported_suffixes=self.parser.supported_suffixes,
+            parse_cache=self.parse_cache,
         )
 
     def release_models(self):
@@ -108,7 +112,7 @@ class Runtime:
         """归还 MinerU 占用的显存；下次入库的第一份文件会重新加载它的模型。
 
         入库期间 MinerU 与视觉模型同时驻留，入库结束后如果一直留着，之后第一次
-        提问再加载 14B 就可能越界，因此构建收尾必须调用这里。
+        提问再加载 32B 就可能越界，因此构建收尾必须调用这里。
         """
         self.mineru.release()
 

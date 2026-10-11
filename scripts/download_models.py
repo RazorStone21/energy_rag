@@ -2,7 +2,7 @@
 
 用法：
     python -m scripts.download_models                                   # 下载全部 4 个模型
-    python -m scripts.download_models --models bge-m3,bge-reranker-v2-m3 # 下载指定模型
+    python -m scripts.download_models --models Qwen3-Embedding-4B,Qwen3-Reranker-4B # 下载指定模型
 """
 
 import argparse
@@ -13,9 +13,42 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 # 默认禁用 Xet 下载方式以配合镜像；环境中已设置的值不会被覆盖。
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
+
+def _patch_httpx2_brotli():
+    """修复 httpx2 的 Brotli 解码 bug（运行时打补丁，不修改第三方库文件）。
+
+    huggingface_hub 2.x 依赖的 httpx2 会把不存在的 output_buffer_limit 关键字传给
+    brotli.Decompressor.process，导致带 br 编码的响应（如 list_repo_tree）解码失败。
+    BrotliDecoder 是纯 Python 类，这里用等价的实现替换它的 decode 方法。
+    """
+    try:
+        import httpx2._decoders as decoders
+    except ImportError:
+        return
+
+    decoder_cls = getattr(decoders, "BrotliDecoder", None)
+    if decoder_cls is None:
+        return
+
+    def patched_decode(self, data):
+        if not data:
+            return
+        self.seen_data = True
+        try:
+            decompressed = self._decompress(data)
+        except decoders.brotli.error as exc:
+            raise decoders.DecodingError(str(exc)) from exc
+        if decompressed:
+            yield decompressed
+
+    decoder_cls.decode = patched_decode
+
+
+_patch_httpx2_brotli()
+
 from src.config import load_settings
 
-MODEL_NAMES = ("bge-m3", "bge-reranker-v2-m3", "Qwen3-14B-bnb-4bit", "Qwen3-VL-8B", "mineru")
+MODEL_NAMES = ("Qwen3-Embedding-4B", "Qwen3-Reranker-4B", "Qwen3-32B-bnb-4bit", "Qwen3-VL-8B", "mineru")
 
 
 def model_catalog(settings):

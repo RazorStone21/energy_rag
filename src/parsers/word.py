@@ -26,6 +26,25 @@ def _looks_like_heading(text):
     return len(text) <= _MAX_HEADING_CHARS and "。" not in text
 
 
+def _paragraph_text(paragraph):
+    """读取段落全部文字，含修订插入（w:ins）与内容控件，忽略修订删除（w:del）。
+
+    python-docx 的 Paragraph.text 只读 w:r 和 w:hyperlink 直接子级；政务公文
+    常以「修订」状态分发，正文整段落在 w:ins 里，正常读会得到空正文（实测
+    0613/0908/0977 三份公告即如此）。删除的文字用 w:delText 标记，天然不在此列；
+    w:del 下偶有的 w:t 用祖先判断一并排除。
+    """
+    from docx.oxml.ns import qn
+
+    _w_del = qn("w:del")
+    parts = []
+    for node in paragraph._p.iter(qn("w:t")):
+        if any(ancestor.tag == _w_del for ancestor in node.iterancestors()):
+            continue
+        parts.append(node.text or "")
+    return "".join(parts)
+
+
 def _outline_level(element):
     """读取段落或样式显式设置的大纲级别；9 表示正文而非标题。"""
     levels = element.xpath("./w:pPr/w:outlineLvl/@w:val")
@@ -65,7 +84,7 @@ def _cell_text(cell):
         if isinstance(block, Table):
             content = _table_markdown(block)
         else:
-            content = block.text
+            content = _paragraph_text(block)
         if content.strip():
             parts.append(content)
     return "\n".join(parts)
@@ -161,7 +180,7 @@ class WordParser:
                     )
                 continue
             paragraph_index += 1
-            text = block.text
+            text = _paragraph_text(block)
             if not text.strip():
                 continue
             level = _heading_level(block)

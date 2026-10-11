@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import re
 from itertools import groupby
 
@@ -26,6 +27,52 @@ def _with_content(chunk, text):
     if copy_method is not None:
         return copy_method(update={"page_content": text})
     return type(chunk)(page_content=text, metadata=dict(chunk.metadata))
+
+
+# Milvus 的 text 字段在 langchain_milvus 里硬编码 max_length=65535（按字符计）。
+# MinerU 解析出的巨型 list/code/section 块会整体保留或整段入库，一份名录/清单
+# 能到数万字符（0162 负面清单：39752 行、每行一个字的退化提取，整段 82844 字符），
+# replace_all 写库时直接报 MilvusException（VARCHAR value length exceeds max_length）。
+# 这里按换行把超限整块切成多片，每片 UTF-8 字节数控制在 30000 以内：字节数与字符数
+# 都远低于 65535，无论 Milvus 按哪种口径计都不会越界，还顺带让单条片段不至于大到
+# 塞爆生成模型的上下文。
+_MAX_CHUNK_BYTES = 30_000
+
+# 切分逻辑版本号：改动任何会影响片段产出的逻辑（断点截断、超长切片、句合并等）
+# 都要递增，让按文件缓存失效、强制重新切分，避免新旧产物混用。
+_CHUNKER_VERSION = "1"
+
+
+def _split_oversized(document):
+    """把超过存储上限的整块按换行切成多条片段，元数据原样继承。
+
+    list/code/section 以行为单位，换行处切分不打断结构；单行本身就超长时
+    （如压缩过的代码行）按字符硬切。普通正文、表格、图片描述远小于上限，不受影响。
+    """
+    text = document.page_content
+    if len(text.encode("utf-8")) <= _MAX_CHUNK_BYTES:
+        return [document]
+    # 先按换行拆成原子行；单行超限时按字符硬切，一个 UTF-8 字符最多 4 字节，
+    # 取 1/4 预算字符数必不超过字节上限。
+    atoms = []
+    for line in text.split("\n"):
+        if len(line.encode("utf-8")) <= _MAX_CHUNK_BYTES:
+            atoms.append(line)
+            continue
+        step = _MAX_CHUNK_BYTES // 4
+        atoms.extend(line[start:start + step] for start in range(0, len(line), step))
+    # 按字节预算把原子行重新拼成片段，换行分隔，保持原有行结构。
+    chunks, current, current_bytes = [], [], 0
+    for atom in atoms:
+        atom_bytes = len(atom.encode("utf-8"))
+        if current and current_bytes + atom_bytes > _MAX_CHUNK_BYTES:
+            chunks.append("\n".join(current))
+            current, current_bytes = [], 0
+        current.append(atom)
+        current_bytes += atom_bytes
+    if current:
+        chunks.append("\n".join(current))
+    return [_with_content(document, piece) for piece in chunks if piece.strip()]
 
 
 def _source_key(chunk):
@@ -85,6 +132,68 @@ def restore_heading_boundaries(chunks, sentence_regex, min_chars):
     ]
 
 
+# 断点检测嵌入的合并句长度上限（字符）。语义切分只为找断点而嵌入，不需要整句；
+# 政务清单这类文档的条目以换行而非句末标点分隔，拆句器会把它们粘成数千字符的
+# "句子"，不截断的话 tokenizer 会按整批最长句填充，前向显存随序列长度暴涨而 OOM
+# （0162 负面清单的 3530 字符合并句实测直接打爆 48G）。512 字符对断点检测绰绰有余，
+# 且只截断这些病态超长句——正常合并句不过百来字符，不受影响。
+_BREAKPOINT_EMBED_MAX_CHARS = 512
+
+
+def _make_batched_chunker(base_cls):
+    """给 SemanticChunker 套一层批量化：把所有版面块的句子合并后一次性嵌入。
+
+    LangChain 的 SemanticChunker.create_documents 对每个版面块分别调用一次
+    embed_documents，一块往往只有三五句，固定开销（分词、CUDA 启动、结果回传）
+    远大于实际计算；千页文档有几万块时，这一项会让构建慢几十倍。这里先按与
+    父类完全相同的顺序拆句、合并，把全部合并句一次性交给 embed_documents
+    （从而吃满 encode 的 batch_size），再按原顺序回填，最后交给父类的断点、
+    阈值与切片逻辑。输出与原生实现逐字节一致，仅合并了嵌入调用。
+    """
+    combine_sentences = importlib.import_module(base_cls.__module__).combine_sentences
+
+    class BatchedSemanticChunker(base_cls):
+        def create_documents(self, texts, metadatas=None):
+            _metadatas = metadatas or [{}] * len(texts)
+            # 预拆句并做 buffer 合并，只收集真正需要嵌入的合并句；
+            # 单句块与父类 split_text 一致：直接返回、不做嵌入。
+            combined_lists = []
+            for text in texts:
+                single = self._get_single_sentences_list(text)
+                if len(single) == 1:
+                    combined_lists.append(None)
+                    continue
+                sentences = [
+                    {"sentence": x, "index": i} for i, x in enumerate(single)
+                ]
+                combined_lists.append(
+                    [
+                        s["combined_sentence"]
+                        for s in combine_sentences(sentences, self.buffer_size)
+                    ]
+                )
+            flat = [c for lst in combined_lists if lst is not None for c in lst]
+            # 嵌入前截断超长合并句（见 _BREAKPOINT_EMBED_MAX_CHARS）：断点检测的嵌入
+            # 只在相邻句间算距离，无需整句上下文；截断只发生在病态超长句上。
+            flat = [c[:_BREAKPOINT_EMBED_MAX_CHARS] for c in flat]
+            embeddings = self.embeddings.embed_documents(flat) if flat else []
+
+            # 用预计算的嵌入回放，避免父类逐块再次嵌入；顺序与预拆分严格一致。
+            original_embed = self.embeddings.embed_documents
+            iterator = iter(embeddings)
+
+            def replay(_texts):
+                return [next(iterator) for _ in _texts]
+
+            self.embeddings.embed_documents = replay
+            try:
+                return super().create_documents(texts, metadatas=_metadatas)
+            finally:
+                self.embeddings.embed_documents = original_embed
+
+    return BatchedSemanticChunker
+
+
 def _load_splitter_factory():
     """尝试从不同模块导入 SemanticChunker；都不可用时保留导入错误。"""
     try:
@@ -94,7 +203,7 @@ def _load_splitter_factory():
             from langchain_text_splitters import SemanticChunker
         except ImportError:
             from langchain.text_splitter import SemanticChunker
-    return SemanticChunker
+    return _make_batched_chunker(SemanticChunker)
 
 
 class Chunker:
@@ -121,6 +230,26 @@ class Chunker:
                 sentence_split_regex=self.settings.sentence_regex,
             )
         return self._splitter
+
+    @property
+    def fingerprint(self) -> str:
+        """切分链路指纹：切分参数、切分逻辑版本与嵌入模型一起决定片段产出。
+
+        断点检测靠嵌入模型算句子间语义距离，换模型会让断点整体漂移；因此这里把
+        嵌入模型路径也纳入指纹，与 parser.fingerprint 拼接后作为按文件缓存的键。
+        """
+        s = self.settings
+        embed_path = str(getattr(getattr(self.embedder, "settings", None), "path", ""))
+        return "chunk-" + _CHUNKER_VERSION + "-" + "|".join(
+            [
+                s.threshold_type,
+                str(s.threshold_amount),
+                str(s.buffer_size),
+                s.sentence_regex,
+                str(s.min_chars),
+                embed_path,
+            ]
+        )
 
     def split_texts(self, docs: list[DocumentLike]) -> list[DocumentLike]:
         """按语义断点拆分正文，继承来源、页码与章节；空输入直接返回空列表。
@@ -168,4 +297,7 @@ class Chunker:
             else:
                 prose.append(document)
         text_chunks = self.filter(self.split_texts(prose))
-        return text_chunks + whole_units + parsed.tables + parsed.figures
+        chunks = text_chunks + whole_units + parsed.tables + parsed.figures
+        # 存储上限的兜底：任何片段正文超长（巨型 list/code/section 块）都按换行切成多片，
+        # 避免 replace_all 写库时撞上 Milvus text 字段的 65535 上限而整体失败。
+        return [piece for chunk in chunks for piece in _split_oversized(chunk)]

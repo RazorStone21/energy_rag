@@ -12,8 +12,8 @@ from .schemas import positive_int
 # 长期记忆注入提示词的硬上限；约 5600 词元，留给文档片段和回答足够空间。
 MAX_MEMORY_CHARS = 8000
 
-# 重排时单条候选的最大词元数。bge-reranker-v2-m3 支持 8192；
-# FlagEmbedding 默认只截到 512（中文约 750 字），超出的正文对重排不可见。
+# 重排时单条候选的最大词元数。Qwen3-Reranker 支持 32K，这里默认 8192 平衡速度与覆盖，
+# 超出的正文对重排不可见。
 DEFAULT_RERANK_MAX_LENGTH = 8192
 
 
@@ -95,7 +95,7 @@ class MineruSettings:
 
     enabled: bool = True
     tier: str = "basic"
-    home: Path = Path("data/mineru_home")
+    home: Path = Path("models/mineru")
     model_source: str = "modelscope"
     # 表格按行切片的大小，与 [excel] 的 rows_per_chunk 同义；表头会在每片重复。
     rows_per_chunk: int = 50
@@ -382,8 +382,8 @@ def load_settings(
     splitting = raw["splitting"]
     milvus = raw["milvus"]
     mineru_raw = dict(raw.get("mineru", {}))
-    # MinerU 的模型目录与文档、索引同源：默认落在数据根目录下，可由 [mineru].home 覆盖。
-    mineru_raw["home"] = resolve(mineru_raw.get("home", "data/mineru_home"))
+    # MinerU 的模型目录默认放在 models/ 下，可由 [mineru].home 覆盖；data/ 只放文档与索引。
+    mineru_raw["home"] = resolve(mineru_raw.get("home", "models/mineru"))
     connection = dict(milvus["connection"])
     uri = connection["uri"]
     # HTTP 服务地址直接使用；Milvus Lite 文件地址和其他数据路径使用同一根目录。

@@ -9,10 +9,10 @@
 data/                          索引、片段缓存和文件哈希清单
 gov_doc/                       待入库的原始文档
 models/
-├── bge-m3/                    嵌入模型权重
-├── bge-reranker-v2-m3/         重排模型权重
+├── Qwen3-Embedding-4B/        嵌入模型权重
+├── Qwen3-Reranker-4B/         重排模型权重
 ├── Qwen3-VL-8B/               视觉模型权重（官方 bf16，加载时量化）
-└── Qwen3-14B-bnb-4bit/        文本生成模型权重（预量化 4bit）
+└── Qwen3-32B-bnb-4bit/        文本生成模型权重（预量化 4bit）
 ```
 
 这些目录只有空的 `.gitkeep` 占位文件，不包含真实文档或模型。

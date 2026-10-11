@@ -54,21 +54,29 @@ class IngestionPipeline:
         chunk_store,
         doc_dir,
         supported_suffixes: Collection[str] = (".pdf",),
+        parse_cache=None,
     ):
-        """保存入库组件、目录和支持的格式；直接使用旧 PDF 解析器时默认只扫描 PDF。"""
+        """保存入库组件、目录和支持的格式；直接使用旧 PDF 解析器时默认只扫描 PDF。
+
+        parse_cache 是可选的按文件片段缓存（见 storage.parse_cache）：传入后每份文件
+        解析成功即落盘，全量构建中途失败也能续跑，不必重新解析已缓存的文件。
+        """
         self.parser = parser
         self.chunker = chunker
         self.vector_store = vector_store
         self.chunk_store = chunk_store
         self.doc_dir = Path(doc_dir)
         self.supported_suffixes = frozenset(supported_suffixes)
+        self.parse_cache = parse_cache
 
     def _parse_files(
-        self, target_paths: list[Path], file_hashes: dict[str, str], progress=None
+        self, target_paths: list[Path], file_hashes: dict[str, str], parse_fingerprint: str, progress=None
     ) -> tuple[dict[str, list[DocumentLike]], dict[str, str]]:
         """逐个解析和切分目标文件，返回按来源分组的成功片段及失败原因。
 
         解析前后比较文件哈希，防止文件在读取期间被修改；失败文件不用于替换旧片段。
+        配置了按文件缓存时，先按「文件名 + 哈希 + 解析指纹」命中缓存，命中则跳过解析；
+        未命中才解析，并在成功后立即写缓存，让后续构建可以续跑。
         progress 是可选的上报对象，用来显示文件级和当前文件内的进度。
         """
         chunks_by_source, failed_sources = {}, {}
@@ -76,16 +84,26 @@ class IngestionPipeline:
             if progress is not None:
                 progress.start_file(index, path.name)
             try:
-                parsed = self.parser.parse(
-                    path, on_status=progress.note if progress is not None else None
-                )
-                if parsed.errors:
-                    raise RuntimeError("; ".join(parsed.errors))
-                chunks = self.chunker.split(parsed)
-                if not chunks:
-                    raise ValueError("No usable chunks were extracted")
-                if file_hash(path) != file_hashes[path.name]:
-                    raise RuntimeError("File changed during parsing; retry the build")
+                chunks = None
+                if self.parse_cache is not None:
+                    chunks = self.parse_cache.get(
+                        path.name, file_hashes[path.name], parse_fingerprint
+                    )
+                if chunks is None:
+                    parsed = self.parser.parse(
+                        path, on_status=progress.note if progress is not None else None
+                    )
+                    if parsed.errors:
+                        raise RuntimeError("; ".join(parsed.errors))
+                    chunks = self.chunker.split(parsed)
+                    if not chunks:
+                        raise ValueError("No usable chunks were extracted")
+                    if file_hash(path) != file_hashes[path.name]:
+                        raise RuntimeError("File changed during parsing; retry the build")
+                    if self.parse_cache is not None:
+                        self.parse_cache.put(
+                            path.name, file_hashes[path.name], parse_fingerprint, chunks
+                        )
                 chunks_by_source[path.name] = chunks
                 if progress is not None:
                     progress.finish_file(path.name, len(chunks))
@@ -140,6 +158,8 @@ class IngestionPipeline:
         parser_fingerprint = getattr(self.parser, "fingerprint", "")
         if not isinstance(parser_fingerprint, str):
             parser_fingerprint = ""
+        # 按文件缓存的键：解析指纹 + 切分指纹，任一变化都让缓存失效、强制重新切分。
+        parse_fingerprint = f"{parser_fingerprint}|{getattr(self.chunker, 'fingerprint', '')}"
         if incremental:
             # 先确认缓存目录可用，避免解析完一堆文件才发现结果保存不了。
             self.chunk_store.assert_ready()
@@ -208,7 +228,7 @@ class IngestionPipeline:
         progress = progress_factory(len(target_paths)) if progress_factory is not None else None
         try:
             chunks_by_source, failed_sources = self._parse_files(
-                target_paths, file_hashes, progress
+                target_paths, file_hashes, parse_fingerprint, progress
             )
 
             # 全量要求所有选中文档都解析成功，否则整体替换会顺手丢掉失败文档的旧片段。

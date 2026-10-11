@@ -4,7 +4,7 @@
 
 系统提供三种使用方式：命令行、Web 界面与 Python 编程接口。
 
-**技术栈**：BGE-M3（嵌入）/ bge-reranker-v2-m3（重排）/ Qwen3-14B（生成）/ Qwen3-VL-8B（图表理解）/ Milvus（向量库）/ jieba + BM25（关键词检索）
+**技术栈**：Qwen3-Embedding-4B（嵌入）/ Qwen3-Reranker-4B（重排）/ Qwen3-32B（生成）/ Qwen3-VL-8B（图表理解）/ Milvus（向量库）/ jieba + BM25（关键词检索）
 
 ## 目录
 
@@ -29,7 +29,7 @@
 | 特性 | 说明 |
 | --- | --- |
 | 混合检索 | 向量召回与 BM25 关键词召回各自独立执行，再以 RRF 融合；单路不可用时自动降级 |
-| 语义重排 | bge-reranker-v2-m3 对融合结果精排，默认保留前 5 条进入提示词 |
+| 语义重排 | Qwen3-Reranker-4B 对融合结果精排，默认保留前 5 条进入提示词 |
 | 多格式解析 | PDF、TXT、Markdown、DOCX、XLSX，保留页码、标题路径、表格行列等位置元数据 |
 | 扫描件与图表 | PDF 版面由 MinerU 解析（正文、表格结构、图表位置与裁剪图）；图表再由本地视觉模型转为文字描述入库 |
 | 多轮问答 | 会话记录落盘于服务端，最近若干轮注入提示词；追问按需改写为独立问句后再检索 |
@@ -87,7 +87,7 @@ python -m pip install ".[dev]"                      # 仅流程层与无模型�
 AutoDL 等已预装模型依赖的环境，直接在项目根目录运行 `main.py` 即可，不需要安装本项目，也不需要设置包名映射。
 
 PDF 的版面解析由 MinerU 完成（正文、表格结构、图表位置与裁剪图），它的模型按档位放在
-`data/mineru_home` 下，首次使用会自动下载，也可提前执行 `python -m scripts.download_models --models mineru`。
+`models/mineru` 下，首次使用会自动下载，也可提前执行 `python -m scripts.download_models --models mineru`。
 扫描件 OCR 由这套模型内置处理，不再需要系统级 OCR 程序。
 
 模型下载与旧版 RAGAS 兼容修复由 `scripts/` 下的工具完成：
@@ -235,7 +235,7 @@ python main.py --config /path/to/config.toml --data-root /path/to/data build --i
 | --- | --- | --- |
 | `[paths]` | `documents`、`chunks`、`manifest`、`memory` | 文档目录、片段缓存、构建清单与记忆目录 |
 | `[embedding]` / `[reranker]` / `[generation]` / `[vision]` | `model_id`、`path` | `model_id` 供下载脚本查找仓库，运行时从 `path` 指定的本地目录加载 |
-| `[reranker]` | `max_length` | 单条候选参与重排打分的最大词元数，默认 8192（模型上限）。FlagEmbedding 的默认值是 512，超出的正文对重排不可见，长片段会只按开头排序 |
+| `[reranker]` | `max_length` | 单条候选参与重排打分的最大词元数，默认 8192。Qwen3-Reranker 支持 32K，超出的正文对重排不可见，长片段会只按开头排序 |
 | `[splitting]` | `threshold_type`、`threshold_amount`、`min_chars` | 语义切分阈值与片段过滤下限 |
 | `[retrieval]` | `dense_top_k`、`bm25_top_k`、`fusion_top_k`、`context_top_k`、`rrf_k` | 各阶段候选数量与融合参数 |
 | `[milvus]` | `collection`、`connection`、`index`、`search` | 集合名、连接地址与索引/搜索参数 |

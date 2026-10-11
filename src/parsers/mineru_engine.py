@@ -65,6 +65,70 @@ class MineruBlock:
     table_html: str = ""
 
 
+_warp_patched = False
+
+
+def _patch_mineru_warp() -> None:
+    """修复 MinerU 对退化检测框的裁图崩溃（不改 site-packages）。
+
+    MinerU 的 OCR 检测偶尔会给出宽或高为 0 的退化四边形（四个角点重合或共线），
+    此时 ``mineru.model.ocr.image.get_rotate_crop_image`` 与印章矫正里的
+    ``seal_det_warp.Homography`` 会把 (0,0) 或负尺寸传给 docvortex 的
+    ``warp_image``，后者直接抛 "Unsupported warp settings"，整份 PDF 解析失败
+    （0127 那份 49MB 的 mee 报告即因此挂掉）。
+
+    这里在项目自己的代码里各包一层：文字识别裁图遇退化框返回空裁剪，调用方
+    ``rotate_vertical_crop_if_needed`` 对空裁剪原样返回；印章矫正把展开尺寸钳到
+    1 像素。两者都不会中断整篇解析，丢掉的只是退化框（原本就没有可读内容）。
+    """
+    global _warp_patched
+    if _warp_patched:
+        return
+    import numpy as np
+    from mineru.model.ocr import image as ocr_image
+    from mineru.model.ocr import seal_det_warp
+
+    # 1) 文字识别裁图：退化四边形（宽或高为 0）返回空裁剪。
+    original_crop = ocr_image.get_rotate_crop_image
+
+    def safe_crop(img, points):
+        pts = np.asarray(points, dtype=np.float32).reshape(4, 2)
+        width = int(max(np.linalg.norm(pts[0] - pts[1]), np.linalg.norm(pts[2] - pts[3])))
+        height = int(max(np.linalg.norm(pts[0] - pts[3]), np.linalg.norm(pts[1] - pts[2])))
+        if width <= 0 or height <= 0:
+            return img[:0, :0].copy()
+        return original_crop(img, points)
+
+    ocr_image.get_rotate_crop_image = safe_crop
+
+    # 2) 印章矫正：展开尺寸不足 1 像素时钳到 1。
+    original_homo = seal_det_warp.Homography
+
+    def safe_homography(
+        image,
+        img_points,
+        world_width,
+        world_height,
+        interpolation=None,
+        ratio_width=1.0,
+        ratio_height=1.0,
+    ):
+        world_width = max(1.0, float(np.nan_to_num(world_width)))
+        world_height = max(1.0, float(np.nan_to_num(world_height)))
+        return original_homo(
+            image,
+            img_points,
+            world_width,
+            world_height,
+            interpolation=interpolation,
+            ratio_width=ratio_width,
+            ratio_height=ratio_height,
+        )
+
+    seal_det_warp.Homography = safe_homography
+    _warp_patched = True
+
+
 def decode_image(data_url: str):
     """把 MinerU 的图片字段解码成 PIL.Image；不是 data URL 或解码失败时返回 None。
 
@@ -186,6 +250,8 @@ class MineruEngine:
         self.preflight()
         import mineru
         from mineru.render import render_content_list
+
+        _patch_mineru_warp()
 
         try:
             # image_analysis=False：不做 MinerU 自带的图片分析，图表由项目自己的
