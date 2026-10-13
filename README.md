@@ -1,10 +1,8 @@
 # 能源文档 RAG 问答系统
 
-面向中文能源与政务文档的本地检索增强生成（RAG）系统。文档解析、向量化、检索与生成全部在本机完成，不依赖外部服务，适用于对数据不出域有要求的检索问答场景。
+面向中文能源与政务文档的本地检索增强生成（RAG）系统。文档解析、向量化、检索与生成全部在本机完成，不依赖外部服务，适用于数据不出域的检索问答场景。系统提供命令行、Web 界面与 Python 编程接口三种使用方式。
 
-系统提供三种使用方式：命令行、Web 界面与 Python 编程接口。
-
-**技术栈**：Qwen3-Embedding-4B（嵌入）/ Qwen3-Reranker-4B（重排）/ Qwen3-32B（生成）/ Qwen3-VL-8B（图表理解）/ Milvus（向量库）/ jieba + BM25（关键词检索）
+**技术栈**：Qwen3-Embedding-4B（嵌入）· Qwen3-Reranker-4B（重排）· Qwen3-32B-bnb-4bit（生成）· Qwen3-VL-4B（图表理解）· Milvus（向量库）· jieba + BM25（关键词检索）· MinerU（PDF 版面解析）
 
 ## 目录
 
@@ -61,13 +59,11 @@
 - **Python** 3.11 或更新版本。
 - **GPU**：模型默认加载到 `cuda`（见 `config.toml` 的 `embedding.device`）。
 - **模型权重**：默认从项目内 `models/` 的四个子目录加载，可参考 `config.toml` 中的 `model_id` 设定。
-- **PDF 版面模型**：MinerU 的版面/OCR/表格模型（约 1G）由 `python -m scripts.download_models --models mineru`
-  下载到 `config.toml` 的 `[mineru].home`；扫描件 OCR 由这套模型内置完成，不需要系统级 OCR 程序。
+- **PDF 版面模型**：MinerU 的版面 / OCR / 表格模型（约 1.6G）由 `python -m scripts.download_models --models mineru` 下载到 `config.toml` 的 `[mineru].home`；扫描件 OCR 由这套模型内置完成，不需要系统级 OCR 程序。
 
 ## 安装
 
-依赖清单统一维护在 `pyproject.toml`，按使用场景分组安装；`requirements.txt` 仅引用这些依赖组。
-安装不会注册命令行程序，日常运行入口是根目录的 `main.py`。
+依赖清单统一维护在 `pyproject.toml`，按使用场景分组安装；`requirements.txt` 仅引用这些依赖组。安装不会注册命令行程序，日常运行入口是根目录的 `main.py`。
 
 | 依赖组 | 内容 | 使用场景 |
 | --- | --- | --- |
@@ -86,15 +82,11 @@ python -m pip install ".[dev]"                      # 仅流程层与无模型�
 
 AutoDL 等已预装模型依赖的环境，直接在项目根目录运行 `main.py` 即可，不需要安装本项目，也不需要设置包名映射。
 
-PDF 的版面解析由 MinerU 完成（正文、表格结构、图表位置与裁剪图），它的模型按档位放在
-`models/mineru` 下，首次使用会自动下载，也可提前执行 `python -m scripts.download_models --models mineru`。
-扫描件 OCR 由这套模型内置处理，不再需要系统级 OCR 程序。
-
 模型下载与旧版 RAGAS 兼容修复由 `scripts/` 下的工具完成：
 
 ```bash
-python -m scripts.download_models                      # 下载全部四个模型
-python -m scripts.download_models --models Qwen3-VL-8B
+python -m scripts.download_models                      # 下载全部四个模型与 MinerU 模型
+python -m scripts.download_models --models Qwen3-VL-4B # 只下载视觉模型
 python -m scripts.fix_ragas_compat                     # 旧依赖组合的兼容修复
 ```
 
@@ -109,8 +101,7 @@ python main.py ask "新型储能的装机目标是多少？"            # 3. 命
 python main.py serve                                     # 4. 或启动 Web 界面
 ```
 
-默认从当前工作目录读取 `config.toml`，文档目录为其中的 `paths.documents`。
-已有索引时改用增量更新：`python main.py build --incremental`。
+默认从当前工作目录读取 `config.toml`，文档目录为其中的 `paths.documents`。已有索引时改用增量更新：`python main.py build --incremental`。
 
 ## 使用
 
@@ -143,8 +134,7 @@ python main.py serve --demo
 | | `--warmup` | 启动后在后台预加载模型 |
 | | `--demo` | 演示模式，不加载模型，见下文 |
 
-`ask` 先打印实际使用的完整提示词，再逐词元显示生成的答案，最后输出生成耗时。
-模型加载、分词和向量库的日志已调低，输出中不含与答案和提示词无关的内容。
+`ask` 先打印实际使用的完整提示词，再逐词元显示生成的答案，最后输出生成耗时。模型加载、分词和向量库的日志已调低，输出中不含与答案和提示词无关的内容。
 
 ### Web 界面
 
@@ -158,8 +148,7 @@ python main.py serve --demo          # 演示模式
 
 界面布局参考通义千问：左侧为会话列表与索引状态卡，中间为流式问答区。每条回答下方可展开参考来源、实际使用的 Prompt 及各阶段耗时。来源面板的序号与提示词中的「片段 N」一致，位置说明与模型看到的是同一套实现。
 
-检索设置中的「混合检索」「重排序」两个开关直接对应 `ask` 的 `hybrid` 与 `with_rerank`。
-关闭重排序后不再按 `context_top_k` 截取，进入提示词的片段由 5 条增加到 20 条，提示词更长、生成更慢，界面上的说明也写明了这一点。
+检索设置中的「混合检索」「重排序」两个开关直接对应 `ask` 的 `hybrid` 与 `with_rerank`。关闭重排序后不再按 `context_top_k` 截取，进入提示词的片段由 5 条增加到 20 条，提示词更长、生成更慢，界面上的说明也写明了这一点。
 
 首次提问需要加载嵌入、重排与生成模型，可能需一到三分钟才出现第一个字；等待期间连接通过注释帧保活，也可用 `--warmup` 在启动时开始加载。
 
@@ -212,15 +201,14 @@ python -m pip install ".[server]"
 
 ## 配置
 
-`config.toml` 是唯一的用户配置入口，包含模型路径、检索参数、Milvus 参数与提示词。
-默认从当前工作目录读取，也可显式指定：
+`config.toml` 是唯一的用户配置入口，包含模型路径、检索参数、Milvus 参数与提示词。默认从当前工作目录读取，也可显式指定：
 
 ```bash
 python main.py --config /path/to/config.toml ask "你的问题"
 python main.py --config /path/to/config.toml --data-root /path/to/data build --incremental
 ```
 
-全局参数 `--config`、`--data-root` 放在 `build`/`ask`/`serve` 子命令之前；工具与评测脚本同样支持这两个参数。
+全局参数 `--config`、`--data-root` 放在 `build` / `ask` / `serve` 子命令之前；工具与评测脚本同样支持这两个参数。
 
 **路径解析规则**
 
@@ -236,9 +224,11 @@ python main.py --config /path/to/config.toml --data-root /path/to/data build --i
 | `[paths]` | `documents`、`chunks`、`manifest`、`memory` | 文档目录、片段缓存、构建清单与记忆目录 |
 | `[embedding]` / `[reranker]` / `[generation]` / `[vision]` | `model_id`、`path` | `model_id` 供下载脚本查找仓库，运行时从 `path` 指定的本地目录加载 |
 | `[reranker]` | `max_length` | 单条候选参与重排打分的最大词元数，默认 8192。Qwen3-Reranker 支持 32K，超出的正文对重排不可见，长片段会只按开头排序 |
+| `[mineru]` | `tier`、`home`、`model_source`、`rows_per_chunk` | PDF 版面解析：模型档位、下载目录、模型来源与表格分片行数 |
+| `[judge]` | `base_url`、`model`、`api_key_env` | 生成评测的判分模型，走 OpenAI 兼容外部 API（默认 DeepSeek），只在 `tests/evaluation` 里使用、不参与线上问答；API Key 从 `api_key_env` 指向的环境变量读取 |
 | `[splitting]` | `threshold_type`、`threshold_amount`、`min_chars` | 语义切分阈值与片段过滤下限 |
 | `[retrieval]` | `dense_top_k`、`bm25_top_k`、`fusion_top_k`、`context_top_k`、`rrf_k` | 各阶段候选数量与融合参数 |
-| `[milvus]` | `collection`、`connection`、`index`、`search` | 集合名、连接地址与索引/搜索参数 |
+| `[milvus]` | `collection`、`connection`、`index`、`search` | 集合名、连接地址与索引 / 搜索参数 |
 | `[excel]` | `header_rows`、`rows_per_chunk`、`max_sheet_cells` | Excel 分片与扫描上限，详见[文档格式支持](#文档格式支持) |
 | `[conversation]` | `max_turns`、`max_chars` | 带进提示词的历史长度，超出部分从最早处丢弃 |
 | `[rewrite]` | `enabled`、`max_turns`、`max_chars` | 多轮追问的查询改写开关，以及送进改写提示词的历史上限 |
@@ -252,15 +242,14 @@ python main.py --config /path/to/config.toml --data-root /path/to/data build --i
 - `[rewrite]` 默认启用，启用时 `prompts.rewrite` 必须包含 `{question}`，配置加载阶段即校验，不会等到加载模型后才失败。
 - `memory.max_chars` 另有硬上限 8000：模型侧不做截断，配置中的该值是提示词长度的唯一防线。建议 `memory.max_chars + conversation.max_chars` 不超过 4000。
 - `memory.enabled` 关闭后既不读也不写长期记忆，目录也不会创建。
+- `[judge]` 会把检索到的文档片段发给外部判分服务，涉密语料不要走外部 API。
 - 原先的大写 Python 配置常量已迁移为 TOML 字段，对应关系见[架构说明](docs/architecture.md)中的映射表。
 
 ## 文档格式支持
 
-支持 `.pdf`、`.txt`、`.md`、`.docx`、`.xlsx`，后缀不区分大小写；**只读取 `paths.documents` 目录的第一层**，不递归子目录。
-`~$` 前缀的 Office 锁定文件自动跳过。
+支持 `.pdf`、`.txt`、`.md`、`.docx`、`.xlsx`，后缀不区分大小写；**只读取 `paths.documents` 目录的第一层**，不递归子目录。`~$` 前缀的 Office 锁定文件自动跳过。
 
-> **升级提示**：PDF 解析已从 unstructured 换成 MinerU。已有环境需要安装新依赖并重建索引；
-> 索引指纹与 build 清单不一致时会自动转为全量构建，不需要手工删缓存：
+> **升级提示**：PDF 解析已从 unstructured 换成 MinerU。已有环境需要安装新依赖并重建索引；索引指纹与 build 清单不一致时会自动转为全量构建，不需要手工删缓存：
 >
 > ```bash
 > python -m pip install "mineru[torch]>=4.0.3"
@@ -272,27 +261,19 @@ python main.py --config /path/to/config.toml --data-root /path/to/data build --i
 
 ### PDF
 
-正文按 `fast` → `pypdf` → OCR 顺序尝试提取，取首个非空结果。每页的页眉页脚按元素类别排除；表格与图片区域由不同 PDF 库分别提取，图片转交视觉模型生成文字描述后入库。
-正文合并跨页段落，并识别「（一）」这类编号层级以还原标题路径。
+正文按 `fast` → `pypdf` → OCR 顺序尝试提取，取首个非空结果。每页的页眉页脚按元素类别排除；表格与图片区域由不同 PDF 库分别提取，图片转交视觉模型生成文字描述后入库。正文合并跨页段落，并识别「（一）」这类编号层级以还原标题路径。
 
 ### TXT
 
-严格读取 UTF-8（含 BOM），保留段落与缩进，不主动切段、不生成页码，引用时显示来源文件名。
-其他编码、空白文件以及含空字符的文件会报告解析失败，请转换为 UTF-8 纯文本后重试。
+严格读取 UTF-8（含 BOM），保留段落与缩进，不主动切段、不生成页码，引用时显示来源文件名。其他编码、空白文件以及含空字符的文件会报告解析失败，请转换为 UTF-8 纯文本后重试。
 
 ### Markdown
 
-使用 markdown-it-py 的 CommonMark 规则并启用表格扩展。
-按标题组织正文并维护标题路径，顶层竖线表格与独立代码块单独提取并整体入库；列表、链接和代码缩进保留原文；列表或引用内部的表格与代码仍放在所属正文中。
-图片链接不读取图片。引用与导出保留标题路径和所属原文块的行号；语义切分后，行号仍表示原文块范围。
-独立代码块和表格不参与语义切分，目前也没有针对超长块的专门切分策略。
+使用 markdown-it-py 的 CommonMark 规则并启用表格扩展。按标题组织正文并维护标题路径，顶层竖线表格与独立代码块单独提取并整体入库；列表、链接和代码缩进保留原文；列表或引用内部的表格与代码仍放在所属正文中。图片链接不读取图片。引用与导出保留标题路径和所属原文块的行号；语义切分后，行号仍表示原文块范围。独立代码块和表格不参与语义切分，目前也没有针对超长块的专门切分策略。
 
 ### Word（DOCX）
 
-使用 python-docx 读取文档主体的段落和表格，按原文顺序遍历，保留标题路径、段落范围与表格序号。
-标题依据大纲级别、内置标题名称及样式继承关系识别；列表保留文字，暂不还原自动编号。
-表格保留全部数据行，以通用列名输出 Markdown；合并单元格的内容重复到对应网格，嵌套表格转为所在单元格内的文本，不还原复杂合并版式。
-不提取图片描述、页眉页脚、脚注、文本框和修订内容，也不推算页码。旧版 `.doc` 需先转换为 `.docx`。
+使用 python-docx 读取文档主体的段落和表格，按原文顺序遍历，保留标题路径、段落范围与表格序号。标题依据大纲级别、内置标题名称及样式继承关系识别；列表保留文字，暂不还原自动编号。表格保留全部数据行，以通用列名输出 Markdown；合并单元格的内容重复到对应网格，嵌套表格转为所在单元格内的文本，不还原复杂合并版式。不提取图片描述、页眉页脚、脚注、文本框和修订内容，也不推算页码。旧版 `.doc` 需先转换为 `.docx`。
 
 ### Excel（XLSX）
 
@@ -368,9 +349,7 @@ report = runtime.ingestion.build(incremental=True)
 print(report.processed, report.failed)
 ```
 
-`create_runtime` 每次创建独立实例，由应用自己持有并决定复用时机，不使用模块级单例。
-同一实例内切分与向量库共用嵌入模型，检索、重排与生成分别按需加载；导入包和查看命令帮助都不会加载 GPU 模型。
-实例创建后配置快照不再变化，调整参数可用 `dataclasses.replace` 创建新设置再构造新 Runtime。
+`create_runtime` 每次创建独立实例，由应用自己持有并决定复用时机，不使用模块级单例。同一实例内切分与向量库共用嵌入模型，检索、重排与生成分别按需加载；导入包和查看命令帮助都不会加载 GPU 模型。实例创建后配置快照不再变化，调整参数可用 `dataclasses.replace` 创建新设置再构造新 Runtime。
 
 入库与问答默认按离线顺序执行，当前不提供并发构建或在线索引切换保证。
 
@@ -393,7 +372,7 @@ src/
   progress.py               入库进度显示
   parsers/                  格式注册、PDF、TXT、Markdown、DOCX 与 XLSX 解析
   retrieval/                BM25、独立双路召回、RRF
-  models/                   嵌入、重排、查询改写及文本/视觉生成适配
+  models/                   嵌入、重排、查询改写及文本 / 视觉生成适配
   storage/                  Milvus、片段缓存、构建清单、记忆读写
   server/                   Web 接口：事件编码、服务层与应用；只有 app.py 依赖 FastAPI
 front/                      前端页面，原生 HTML/CSS/JS，无需构建步骤
@@ -407,8 +386,7 @@ data/                       运行数据：索引、片段缓存、原始文档�
 models/                     模型权重，不纳入版本控制
 ```
 
-业务代码直接位于 `src/`，使用 `src.xxx` 导入。注意 `models/`（模型权重）与 `src/models/`（模型适配代码）是两个不同的目录。
-`data/` 与 `models/` 下的内容体积大或含敏感对话记录，已在 `.gitignore` 中排除，需由使用方自行准备。
+业务代码直接位于 `src/`，使用 `src.xxx` 导入。注意 `models/`（模型权重）与 `src/models/`（模型适配代码）是两个不同的目录。`data/` 与 `models/` 下的内容体积大或含敏感对话记录，已在 `.gitignore` 中排除，需由使用方自行准备。
 
 ## 测试与评测
 
@@ -432,11 +410,8 @@ python -m tests.evaluation.run_chunk_compare
 - 单元测试使用替身验证流程与存储适配接口，不加载模型、不连数据库。
 - 集成测试在模型或 PDF 缺失时跳过；真实生成测试额外需要 `RUN_LLM_TEST=1`。
 - 评测脚本经 `create_runtime` 构造运行环境，实际执行需要 GPU、本地模型权重与已构建的索引，产物写入 `tests/results/`。
-- **生成评测很慢**（121 题要数小时），所以支持分层抽样与断点续跑：每生成一题就把结果写进报告文件，
-  中断只损失当前一题；`--limit` 的结果是更大 `--limit` 的前缀，配合 `--resume` 可以分批推进。
-  抽样按题型分层，table、numeric 这类小类不会被随机抽没。
+- **生成评测很慢**（121 题要数小时），所以支持分层抽样与断点续跑：每生成一题就把结果写进报告文件，中断只损失当前一题；`--limit` 的结果是更大 `--limit` 的前缀，配合 `--resume` 可以分批推进。抽样按题型分层，table、numeric 这类小类不会被随机抽没。
 - 单元测试不能代替真实 GPU、OCR、Milvus 与 RAGAS 链路验证。
-- 检索与生成评测的参数 A/B 结论见[修复记录](docs/fixes-2026-09-21.md)第三节。
 - 代码规范、文档字符串要求与本地检查命令见[代码规范](docs/code_style.md)：
 
   ```bash
@@ -445,27 +420,22 @@ python -m tests.evaluation.run_chunk_compare
 
 ## 运行数据与失败处理
 
-**索引格式**：`chunks.pkl` 沿用 LangChain Document 与 `{文件名: sha256}` 清单格式；Milvus 集合使用动态元数据字段，以容纳 PDF 页码、Markdown 标题与行号等差异字段，旧固定字段集合需全量重建。
-更换模型、向量维度或切分策略后应重建索引。
+**索引格式**：`chunks.pkl` 沿用 LangChain Document 与 `{文件名: sha256}` 清单格式；Milvus 集合使用动态元数据字段，以容纳 PDF 页码、Markdown 标题与行号等差异字段，旧固定字段集合需全量重建。更换模型、向量维度或切分策略后应重建索引。
 
 **构建语义**：
 
 - 全量构建会先解析全部目标文件，任一文件失败即在修改索引前终止。
 - 增量构建保留失败文件的旧片段与旧哈希，其余成功文件正常更新；CLI 对部分失败返回非零退出码。
-- 写入中断会留下 `build_manifest.pending`，阻止查询或增量更新混用不一致数据。修复失败原因后执行 `python main.py build`，成功重建会清除该标记。该标记只用于检测中断，不提供跨数据库/文件的事务或自动回滚。
+- 写入中断会留下 `build_manifest.pending`，阻止查询或增量更新混用不一致数据。修复失败原因后执行 `python main.py build`，成功重建会清除该标记。该标记只用于检测中断，不提供跨数据库 / 文件的事务或自动回滚。
 
-**注意**：`build --max-files 1` 会把索引替换成该单个文件的内容，仅适用于隔离的测试数据目录。
-因此全量构建配合 `--max-files` 会先被拒绝，确认后加 `--allow-partial-index` 才执行，
-执行时会再打一条「其余来源会被删除」的告警。增量构建不受影响：
-`build --incremental --max-files N` 只更新选中的文件，其余来源的片段保持不动。
+**注意**：`build --max-files 1` 会把索引替换成该单个文件的内容，仅适用于隔离的测试数据目录。因此全量构建配合 `--max-files` 会先被拒绝，确认后加 `--allow-partial-index` 才执行，执行时会再打一条「其余来源会被删除」的告警。增量构建不受影响：`build --incremental --max-files N` 只更新选中的文件，其余来源的片段保持不动。
 
-`data/chunks.pkl` 是词法检索（BM25）的唯一来源，缺失时混合检索会静默退化成只用向量。
-它丢了只能全量重建：增量构建要求缓存存在，会直接报错而不是重建。
+`data/chunks.pkl` 是词法检索（BM25）的唯一来源，缺失时混合检索会静默退化成只用向量。它丢了只能全量重建：增量构建要求缓存存在，会直接报错而不是重建。
 
 ## 已知限制
 
 - 表格与图片区域由不同 PDF 库依次提取；图片转为文字描述后入库，不保留原图。
-- 尚未实现：直接图片向量检索、父子片段恢复、上下文词元预算，以及 Word/Excel 的图片描述。
+- 尚未实现：直接图片向量检索、父子片段恢复、上下文词元预算，以及 Word / Excel 的图片描述。
 - Markdown 的独立代码块与表格整体入库，超长块没有专门切分策略。
 - 不支持旧版 `.doc` 与 `.xls`，需先转换为 `.docx` / `.xlsx`。
 - 不支持并发构建或在线索引切换，问答与入库串行执行。
@@ -477,6 +447,4 @@ python -m tests.evaluation.run_chunk_compare
 | --- | --- |
 | [架构说明](docs/architecture.md) | 模块边界、流程与数据结构、配置迁移对照表 |
 | [代码规范](docs/code_style.md) | 命名、注释、格式约定与本地检查命令 |
-| [服务器对照](docs/server_layout.md) | 服务器目录与本项目的文件对应关系 |
-| [修复记录](docs/fixes-2026-09-21.md) | 可用性缺陷、评测能力与重排截断的改动说明与 A/B 数据 |
 | [前端说明](front/README.md) | 前端文件职责、主题定制与渲染规则 |

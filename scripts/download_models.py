@@ -48,7 +48,7 @@ _patch_httpx2_brotli()
 
 from src.config import load_settings
 
-MODEL_NAMES = ("Qwen3-Embedding-4B", "Qwen3-Reranker-4B", "Qwen3-32B-bnb-4bit", "Qwen3-VL-8B", "mineru")
+MODEL_NAMES = ("Qwen3-Embedding-4B", "Qwen3-Reranker-4B", "Qwen3-32B-bnb-4bit", "Qwen3-VL-4B", "mineru")
 
 
 def model_catalog(settings):
