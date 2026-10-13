@@ -45,21 +45,9 @@ build/
 dist/
 *.egg-info/
 
-# cnki_crawler 运行时数据（抓取的题录库与原始页面）
-cnki_crawler/data/
-energy_docs/data/
-patent_corpus/data/
-
 # 全量重建后产生的运行时数据与原始文档归档（2026-10）
 # 按文件片段缓存：断点续跑用，见 src/storage/parse_cache.py，可随时重建
 data/parse_cache/
-# 原始文档的打包与剔除归档，体积大且各环境不同
-data/gov_doc.zip
-data/gov_doc_excluded/
-data/_converted_staging/
-excluded_slow_docs/
-# 临时辅助文件：SSH 公钥（一次性，仅用于本次推送，不入库）
-docs/github_ssh_public_key.txt
 
 # 构建与运行日志
 *.log
