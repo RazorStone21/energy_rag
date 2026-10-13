@@ -12,6 +12,12 @@ from ..schemas import positive_int, valid_query
 # Qwen3-Reranker 判断「文档是否满足查询」时使用的默认检索指令。
 DEFAULT_INSTRUCTION = "Given a web search query, retrieve relevant passages that answer the query"
 
+# 一次前向打分的最多候选条数。分批是为了把峰值显存和单批大小绑定，
+# 而不是和全部候选（fusion_top_k=20）绑定；分数与整批一次前向完全一致。
+# 取 2：末尾 logits 张量按 batch×seq×vocab 物化，4 条 × 8192 时 logits 单张就约
+# 10G，生成评测里嵌入/重排/生成三模型已占约 35G，只剩约 13G 给前向激活。
+_SCORE_BATCH = 2
+
 
 class _Qwen3Reranker:
     """Qwen3-Reranker 适配器：把 transformers 模型包装成旧 FlagReranker 的接口。
@@ -50,34 +56,43 @@ class _Qwen3Reranker:
         """返回每条候选的相关性分数（模型输出 yes 的概率），顺序与 pairs 一致。
 
         normalize 仅为兼容旧接口保留：这里的分数本来就是 0~1 的概率。
+
+        逐批打分而不是把全部候选塞进一次前向：重排取末尾 logits，因果模型各序列
+        之间没有跨序列注意力，分批结果与整批完全一致；但一批 20 条 × 8192 token
+        的 MLP 中间激活会直接打爆 48G 卡（生成模型同时驻留时更紧），分批后峰值
+        只与单批大小相关。
         """
         import torch
 
         tokenizer = self._tokenizer
-        texts = [self._format_pair(query, document) for query, document in pairs]
         max_length = max_length or 8192
-        # 先把正文按「总长 - 前后缀」截断，再拼上前缀/后缀，最后统一左填充。
-        inputs = tokenizer(
-            texts,
-            padding=False,
-            truncation="longest_first",
-            return_attention_mask=False,
-            max_length=max_length - len(self._prefix_tokens) - len(self._suffix_tokens),
-        )
-        for i, ids in enumerate(inputs["input_ids"]):
-            inputs["input_ids"][i] = self._prefix_tokens + ids + self._suffix_tokens
-        # 正文已在上面按「总长 - 前后缀」截断，这里只需左填充到批次内最长序列。
-        inputs = tokenizer.pad(inputs, padding=True, return_tensors="pt")
-        inputs = {key: value.to(self._model.device) for key, value in inputs.items()}
-        with torch.no_grad():
-            logits = self._model(**inputs).logits[:, -1, :]
         yes_id = tokenizer.convert_tokens_to_ids("yes")
         no_id = tokenizer.convert_tokens_to_ids("no")
-        # 在 [no, yes] 两个词元上做 softmax，取 yes 的概率作为相关分数。
-        scores = torch.log_softmax(
-            torch.stack([logits[:, no_id], logits[:, yes_id]], dim=1), dim=1
-        )[:, 1].exp()
-        return scores.tolist()
+        all_scores = []
+        for start in range(0, len(pairs), _SCORE_BATCH):
+            chunk = pairs[start : start + _SCORE_BATCH]
+            texts = [self._format_pair(query, document) for query, document in chunk]
+            # 先把正文按「总长 - 前后缀」截断，再拼上前缀/后缀，最后统一左填充。
+            inputs = tokenizer(
+                texts,
+                padding=False,
+                truncation="longest_first",
+                return_attention_mask=False,
+                max_length=max_length - len(self._prefix_tokens) - len(self._suffix_tokens),
+            )
+            for i, ids in enumerate(inputs["input_ids"]):
+                inputs["input_ids"][i] = self._prefix_tokens + ids + self._suffix_tokens
+            # 正文已在上面按「总长 - 前后缀」截断，这里只需左填充到批次内最长序列。
+            inputs = tokenizer.pad(inputs, padding=True, return_tensors="pt")
+            inputs = {key: value.to(self._model.device) for key, value in inputs.items()}
+            with torch.no_grad():
+                logits = self._model(**inputs).logits[:, -1, :]
+            # 在 [no, yes] 两个词元上做 softmax，取 yes 的概率作为相关分数。
+            scores = torch.log_softmax(
+                torch.stack([logits[:, no_id], logits[:, yes_id]], dim=1), dim=1
+            )[:, 1].exp()
+            all_scores.extend(scores.tolist())
+        return all_scores
 
 
 def _load_qwen3_reranker(model_path):
@@ -91,6 +106,10 @@ def _load_qwen3_reranker(model_path):
         dtype=torch.bfloat16,
         device_map="auto",
     ).eval()
+    # 与嵌入模型一致的修复：重排只做一次前向取末尾 logits，不需要 KV cache。
+    # 默认 use_cache=True 会给整批每个 token 建 36 层 KV cache，20 条候选 × 8192
+    # token 时约 15 GiB，直接把 48G 卡打爆（见 embedder._disable_use_cache 的注释）。
+    model.config.use_cache = False
     return _Qwen3Reranker(model, tokenizer)
 
 
